@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>EarlyBird CRM Workflow Charts</title>
+    <style>
+      :root {
+        --n: #102a43;
+        --b: #1677a7;
+        --s: #e8f5fa;
+        --p: #fffdf9;
+        --c: #ef765f;
+        --m: #6e7d88;
+        --l: #dfe6e8;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #f3f6f6;
+        color: #172b3a;
+        font-family: Inter, Arial, sans-serif;
+      }
+      .hero {
+        padding: 48px max(24px, 6vw);
+        background: var(--n);
+        color: white;
+      }
+      .hero small {
+        color: #73c6e2;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        font-weight: 700;
+      }
+      .hero h1 {
+        font-size: clamp(30px, 5vw, 54px);
+        margin: 10px 0;
+      }
+      .hero p {
+        color: #c8d7e1;
+        max-width: 760px;
+        line-height: 1.6;
+      }
+      .tabs {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 25px;
+      }
+      .tabs a {
+        color: white;
+        text-decoration: none;
+        border: 1px solid #476277;
+        padding: 9px 13px;
+        border-radius: 30px;
+        font-size: 13px;
+      }
+      main {
+        padding: 32px max(18px, 5vw) 70px;
+        max-width: 1500px;
+        margin: auto;
+      }
+      .chart {
+        background: var(--p);
+        border: 1px solid var(--l);
+        border-radius: 22px;
+        padding: 25px;
+        margin: 22px 0;
+        box-shadow: 0 15px 45px rgba(16, 42, 67, 0.06);
+      }
+      h2 {
+        margin: 0 0 5px;
+      }
+      .intro {
+        color: var(--m);
+        margin: 0 0 25px;
+      }
+      .flow {
+        display: flex;
+        align-items: stretch;
+        gap: 12px;
+        overflow: auto;
+        padding: 4px 2px 14px;
+      }
+      .node {
+        min-width: 180px;
+        max-width: 220px;
+        padding: 16px;
+        border: 1px solid #cfdcdf;
+        border-radius: 15px;
+        background: white;
+      }
+      .node b {
+        display: block;
+        margin-bottom: 7px;
+      }
+      .node span {
+        color: var(--m);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .node.owner {
+        border-top: 4px solid var(--c);
+      }
+      .node.sales {
+        border-top: 4px solid var(--b);
+      }
+      .node.ops {
+        border-top: 4px solid #d6a44e;
+      }
+      .node.system {
+        border-top: 4px solid #23876f;
+        background: #f4fbf8;
+      }
+      .arrow {
+        align-self: center;
+        color: var(--b);
+        font-size: 24px;
+        font-weight: 700;
+      }
+      .decision {
+        background: #fff5df;
+      }
+      .lanes {
+        display: grid;
+        grid-template-columns: 120px 1fr;
+        border: 1px solid var(--l);
+        border-radius: 16px;
+        overflow: hidden;
+      }
+      .lane-name {
+        background: var(--n);
+        color: white;
+        padding: 18px 12px;
+        border-bottom: 1px solid #38556c;
+        font-weight: 700;
+      }
+      .lane-flow {
+        padding: 13px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        overflow: auto;
+        border-bottom: 1px solid var(--l);
+      }
+      .lane-flow .node {
+        min-width: 155px;
+        padding: 12px;
+      }
+      .legend {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+        margin-top: 16px;
+        color: var(--m);
+        font-size: 12px;
+      }
+      .legend i {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+        margin-right: 5px;
+      }
+      .note {
+        padding: 14px;
+        background: var(--s);
+        border-radius: 13px;
+        color: #315e72;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      @media (max-width: 650px) {
+        .chart {
+          padding: 17px;
+        }
+        .lanes {
+          grid-template-columns: 86px 1fr;
+        }
+        .lane-name {
+          font-size: 12px;
+        }
+        .node {
+          min-width: 160px;
+        }
+        .arrow {
+          font-size: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="hero">
+      <small>EarlyBird Travel CRM</small>
+      <h1>Workflow charts</h1>
+      <p>
+        Browser-ready view of how enquiries, follow-ups, approvals and
+        operations connect. Open this file by double-clicking it; no chart
+        software is required.
+      </p>
+      <nav class="tabs">
+        <a href="#phase1">Phase 1</a><a href="#full">Full journey</a
+        ><a href="#roles">Role hand-offs</a><a href="#exceptions">Exceptions</a>
+      </nav>
+    </header>
+    <main>
+      <section class="chart" id="phase1">
+        <h2>Phase 1: enquiry to next action</h2>
+        <p class="intro">
+          The current working release keeps every lead owned and every follow-up
+          visible.
+        </p>
+        <div class="flow">
+          <div class="node owner">
+            <b>1. Capture customer</b
+            ><span>Owner or Sales records the essential contact details.</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node owner">
+            <b>2. Create enquiry</b
+            ><span
+              >Destination, dates, group, budget and services are added
+              progressively.</span
+            >
+          </div>
+          <div class="arrow">→</div>
+          <div class="node system">
+            <b>3. Assign</b
+            ><span
+              >The system notifies the chosen Sales user and creates contact
+              work.</span
+            >
+          </div>
+          <div class="arrow">→</div>
+          <div class="node sales">
+            <b>4. Contact customer</b
+            ><span
+              >Sales records the call outcome and missing requirements.</span
+            >
+          </div>
+          <div class="arrow">→</div>
+          <div class="node system">
+            <b>5. Schedule follow-up</b
+            ><span
+              >A dated next action automatically appears in Tasks and
+              Calendar.</span
+            >
+          </div>
+          <div class="arrow">→</div>
+          <div class="node sales">
+            <b>6. Continue or close</b
+            ><span
+              >Move forward, place on hold with a review date, or record a lost
+              reason.</span
+            >
+          </div>
+        </div>
+      </section>
+      <section class="chart" id="full">
+        <h2>Complete planned customer journey</h2>
+        <p class="intro">
+          Phases 1–4 now cover enquiry through supplier arrangements and trip
+          execution. Later phases continue into settlement, cancellation and
+          refunds.
+        </p>
+        <div class="flow">
+          <div class="node sales">
+            <b>Enquiry</b><span>Needs collected and followed up.</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node owner">
+            <b>Quote request</b
+            ><span>Sales asks Owner to prepare pricing.</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node owner">
+            <b>Review & approve</b
+            ><span>Owner verifies costs, margin and itinerary.</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node system">
+            <b>PDF quotation</b
+            ><span>System generates the approved customer document.</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node sales">
+            <b>Customer decision</b
+            ><span>Sales shares manually and records the response.</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node decision">
+            <b>Advance received?</b
+            ><span>Owner confirms receipt; no driver can confirm money.</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node ops">
+            <b>Operations</b
+            ><span>Hotels, tickets, cars and driver tasks are arranged.</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node system">
+            <b>Trip closure</b
+            ><span
+              >Completion, pending items and audit history are retained.</span
+            >
+          </div>
+        </div>
+      </section>
+      <section class="chart" id="roles">
+        <h2>Role hand-offs</h2>
+        <p class="intro">
+          Each person sees the work and customer information needed for their
+          job.
+        </p>
+        <div class="lanes">
+          <div class="lane-name">Owner</div>
+          <div class="lane-flow">
+            <div class="node">
+              <b>Assign lead</b><span>Choose Sales owner</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="node">
+              <b>Prepare quote</b><span>Implemented in Phase 2</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="node">
+              <b>Confirm advance</b><span>Later phase</span>
+            </div>
+          </div>
+          <div class="lane-name">Sales</div>
+          <div class="lane-flow">
+            <div class="node">
+              <b>Acknowledge</b><span>Accept the assignment</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="node">
+              <b>Follow up</b><span>Record outcome and next action</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="node">
+              <b>Send approved quote</b><span>Manual WhatsApp initially</span>
+            </div>
+          </div>
+          <div class="lane-name">Operations</div>
+          <div class="lane-flow">
+            <div class="node">
+              <b>Receive task</b><span>Only relevant trip data</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="node">
+              <b>Execute</b><span>Update timing, trip notes and logistics</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="node">
+              <b>Report exception</b
+              ><span>Owner resolves money or booking issues</span>
+            </div>
+          </div>
+          <div class="lane-name">System</div>
+          <div class="lane-flow">
+            <div class="node">
+              <b>Notify</b><span>Assignment and due reminders</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="node">
+              <b>Escalate</b><span>Owner sees overdue work</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="node">
+              <b>Audit</b><span>Who changed what and when</span>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="chart" id="exceptions">
+        <h2>Important exception paths</h2>
+        <p class="intro">
+          The application prevents silent loss of work when normal plans change.
+        </p>
+        <div class="flow">
+          <div class="node decision">
+            <b>No answer</b
+            ><span
+              >Record outcome and schedule another call; task stays
+              visible.</span
+            >
+          </div>
+          <div class="node decision">
+            <b>Dates unknown</b
+            ><span
+              >Keep date type as Unknown/Flexible; exact dates are
+              optional.</span
+            >
+          </div>
+          <div class="node decision">
+            <b>Duplicate customer</b
+            ><span>Review the warning before creating a separate record.</span>
+          </div>
+          <div class="node decision">
+            <b>Staff unavailable</b
+            ><span
+              >Owner reassigns open enquiries and tasks; old notices are
+              removed.</span
+            >
+          </div>
+          <div class="node decision">
+            <b>Imported row unclear</b
+            ><span>Mark Needs review and do not create active reminders.</span>
+          </div>
+          <div class="node decision">
+            <b>Driver collects money</b
+            ><span
+              >Driver informs Owner; Owner records and confirms it in a later
+              phase.</span
+            >
+          </div>
+        </div>
+        <p class="note">
+          <b>Current Phase 4 boundary:</b> enquiry, customer, task, calendar,
+          notifications, staff access, import, quotation approval, PDF, manual
+          sharing, customer decision, booking, verified payment, supplier
+          confirmation, driver assignment and trip execution are implemented.
+          Settlement, cancellation and refund boxes show the approved future
+          flow.
+        </p>
+        <div class="legend">
+          <span><i style="background: #ef765f"></i>Owner</span
+          ><span><i style="background: #1677a7"></i>Sales</span
+          ><span><i style="background: #d6a44e"></i>Operations</span
+          ><span><i style="background: #23876f"></i>System</span>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
