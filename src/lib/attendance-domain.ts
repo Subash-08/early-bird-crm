@@ -9,7 +9,10 @@ const iso = z.string().datetime({ offset: true });
 export const attendanceLocationSchema = z.object({
   latitude: z.number().finite().gte(-90).lte(90),
   longitude: z.number().finite().gte(-180).lte(180),
-  accuracyM: z.number().finite().positive().max(10_000),
+  // Some desktop browsers report a very large (but valid) uncertainty radius.
+  // Accept it as input so the server can return a useful policy error below,
+  // rather than exposing a raw schema-validation limit to the staff member.
+  accuracyM: z.number().finite().positive().max(1_000_000),
   capturedAt: iso,
 }).strict();
 
