@@ -162,27 +162,138 @@ export async function searchCustomers(a: Actor, input: unknown) {
     .limit(limit)
     .toArray();
 }
-export async function snapshot(a: Actor) {
-  const bookingFilter =
+
+export async function customerDetail(a: Actor, customerId: string) {
+  const customer = await customerAllowed(a, customerId);
+  const assignedFilter = a.role === "owner" ? {} : { assigneeId: a.id };
+  const salesBookingFilter = a.role === "owner" ? {} : { salesAssigneeId: a.id };
+  const [enquiries, quotes, bookings, tasks] = await Promise.all([
+    (await collection("enquiries")).find(
+      { org: a.org, customerId, ...assignedFilter },
+    ).sort({ updatedAt: -1 }).limit(50).toArray(),
+    (await collection("quotes")).find(
+      { org: a.org, customerId, ...assignedFilter },
+    ).sort({ updatedAt: -1 }).limit(50).toArray(),
+    (await collection("bookings")).find(
+      { org: a.org, customerId, ...salesBookingFilter },
+    ).sort({ updatedAt: -1 }).limit(50).toArray(),
+    (await collection("tasks")).find(
+      { org: a.org, customerId, ...assignedFilter },
+    ).sort({ dueAt: -1 }).limit(50).toArray(),
+  ]);
+  const bookingIds = bookings.map((booking) => booking._id);
+  const invoices = bookingIds.length
+    ? await (await collection("invoices")).find(
+        { org: a.org, bookingId: { $in: bookingIds } },
+        { projection: { bytes: 0 } },
+      ).sort({ createdAt: -1 }).limit(100).toArray()
+    : [];
+  return {
+    actor: a,
+    customer,
+    enquiries,
+    quotes: quotes.map((quote) => publicQuoteForRole(quote, a.role)),
+    bookings: bookings.map((booking) => publicBookingForRole(booking, a.role)),
+    tasks,
+    invoices,
+  };
+}
+export type WorkspaceScope =
+  | "all" | "shell" | "dashboard" | "enquiries" | "customers" | "quotations"
+  | "bookings" | "operations" | "settlements" | "tasks" | "notifications"
+  | "reports" | "imports" | "invoice-settings" | "staff" | "attendance";
+
+export type WorkspaceListQuery = {
+  page?: number;
+  pageSize?: number;
+  query?: string;
+  status?: string;
+  assigneeId?: string;
+  from?: string;
+  to?: string;
+};
+
+const escapedRegex = (value = "") =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export async function snapshot(
+  a: Actor,
+  scope: WorkspaceScope = "all",
+  input: WorkspaceListQuery = {},
+) {
+  const page = Math.max(1, Math.floor(Number(input.page) || 1));
+  const pageSize = Math.min(50, Math.max(10, Math.floor(Number(input.pageSize) || 20)));
+  const query = String(input.query || "").trim().slice(0, 80);
+  const status = String(input.status || "").trim().slice(0, 80);
+  const assigneeId = String(input.assigneeId || "").trim().slice(0, 100);
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(input.from || "")) ? String(input.from) : "";
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(String(input.to || "")) ? String(input.to) : "";
+  const matcher = query ? { $regex: escapedRegex(query), $options: "i" } : null;
+  const dateRange = (field: string, dateOnly = false) =>
+    from || to
+      ? {
+          [field]: {
+            ...(from ? { $gte: dateOnly ? from : `${from}T00:00:00.000Z` } : {}),
+            ...(to ? { $lte: dateOnly ? to : `${to}T23:59:59.999Z` } : {}),
+          },
+        }
+      : {};
+  let pagination = { page, pageSize, total: 0, totalPages: 1 };
+  const setPagination = (total: number) => {
+    pagination = {
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  };
+  const needs = (...values: WorkspaceScope[]) => scope === "all" || values.includes(scope);
+  const needBookings = needs("bookings", "operations", "settlements");
+  const needPayments = needs("bookings");
+  const needInvoices = needs("bookings");
+  const needOperations = needs("operations");
+  const needSettlementLinks = needs("operations", "settlements");
+  const needEnquiries = needs("dashboard", "enquiries", "quotations");
+  const needCustomers = needs("customers", "enquiries", "quotations");
+  const needTasks = needs("dashboard", "tasks");
+  const needQuotes = needs("quotations", "bookings");
+  const needNotificationRows = needs("dashboard", "notifications");
+  const bookingAccess =
     a.role === "owner"
       ? { org: a.org }
       : a.role === "sales"
         ? { org: a.org, salesAssigneeId: a.id }
         : { org: a.org, operationsReleased: true, operationsAssigneeIds: a.id };
-  const bookings = (
+  const bookingIsPrimary = ["bookings", "operations", "settlements"].includes(scope);
+  const bookingFilter = {
+    ...bookingAccess,
+    ...(scope === "operations" ? { operationsReleased: true } : {}),
+    ...(bookingIsPrimary && status ? { status } : {}),
+    ...(bookingIsPrimary && assigneeId && a.role === "owner"
+      ? { $or: [{ salesAssigneeId: assigneeId }, { operationsAssigneeIds: assigneeId }] }
+      : {}),
+    ...(bookingIsPrimary ? dateRange("serviceStart", true) : {}),
+    ...(bookingIsPrimary && matcher
+      ? { $and: [{ $or: [{ bookingNumber: matcher }, { destination: matcher }, { status: matcher }] }] }
+      : {}),
+  };
+  if (needBookings && bookingIsPrimary)
+    setPagination(await (await collection("bookings")).countDocuments(bookingFilter));
+  const bookings = needBookings ? (
     await (
       await collection("bookings")
     )
       .find(bookingFilter)
       .sort({ updatedAt: -1 })
-      .limit(1000)
+      .skip(bookingIsPrimary ? (page - 1) * pageSize : 0)
+      .limit(bookingIsPrimary ? pageSize : 100)
       .toArray()
-  ).map((booking) => publicBookingForRole(booking, a.role));
+  ).map((booking) => publicBookingForRole(booking, a.role)) : [];
   const bookingIds = bookings.map((booking) => booking._id);
   const phase3 = {
     bookings,
     payments:
-      a.role === "operations"
+      !needPayments || a.role === "operations"
         ? []
         : await (
             await collection("payments")
@@ -194,7 +305,7 @@ export async function snapshot(a: Actor) {
             .sort({ createdAt: -1 })
             .toArray(),
     invoices:
-      a.role === "operations"
+      !needInvoices || a.role === "operations"
         ? []
         : await (
             await collection("invoices")
@@ -203,7 +314,7 @@ export async function snapshot(a: Actor) {
             .sort({ createdAt: -1 })
             .toArray(),
   };
-  const tripSegments = await (
+  const tripSegments = needSettlementLinks ? await (
     await collection("tripSegments")
   )
     .find({
@@ -212,7 +323,7 @@ export async function snapshot(a: Actor) {
       ...(a.role === "operations" ? { driverId: a.id } : {}),
     })
     .sort({ startAt: 1 })
-    .toArray();
+    .toArray() : [];
   const vehicleIds = [
     ...new Set(
       tripSegments.map((segment) => segment.vehicleId).filter(Boolean),
@@ -220,7 +331,7 @@ export async function snapshot(a: Actor) {
   ];
   const phase4 = {
     suppliers:
-      a.role === "operations"
+      !needOperations || a.role === "operations"
         ? []
         : await (
             await collection("suppliers")
@@ -229,7 +340,7 @@ export async function snapshot(a: Actor) {
             .sort({ name: 1 })
             .limit(1000)
             .toArray(),
-    vehicles: await (
+    vehicles: needOperations ? await (
       await collection("vehicles")
     )
       .find({
@@ -238,8 +349,8 @@ export async function snapshot(a: Actor) {
       })
       .sort({ label: 1 })
       .limit(1000)
-      .toArray(),
-    arrangements: (
+      .toArray() : [],
+    arrangements: needSettlementLinks ? (
       await (
         await collection("arrangements")
       )
@@ -247,16 +358,16 @@ export async function snapshot(a: Actor) {
         .sort({ startAt: 1 })
         .limit(2000)
         .toArray()
-    ).map((record) => publicArrangementForRole(record, a.role)),
+    ).map((record) => publicArrangementForRole(record, a.role)) : [],
     tripSegments,
-    readinessItems: await (
+    readinessItems: needOperations ? await (
       await collection("readinessItems")
     )
       .find({ org: a.org, bookingId: { $in: bookingIds } })
       .sort({ label: 1 })
       .limit(2000)
-      .toArray(),
-    incidents: await (
+      .toArray() : [],
+    incidents: needOperations ? await (
       await collection("incidents")
     )
       .find({
@@ -277,8 +388,8 @@ export async function snapshot(a: Actor) {
       })
       .sort({ reportedAt: -1 })
       .limit(1000)
-      .toArray(),
-    collectionReports: await (
+      .toArray() : [],
+    collectionReports: needOperations ? await (
       await collection("collectionReports")
     )
       .find({
@@ -288,8 +399,8 @@ export async function snapshot(a: Actor) {
       })
       .sort({ createdAt: -1 })
       .limit(1000)
-      .toArray(),
-    operationsDocuments: await (
+      .toArray() : [],
+    operationsDocuments: needOperations ? await (
       await collection("operationsDocuments")
     )
       .find(
@@ -304,9 +415,9 @@ export async function snapshot(a: Actor) {
       )
       .sort({ createdAt: -1 })
       .limit(1000)
-      .toArray(),
+      .toArray() : [],
     travelDocuments:
-      a.role === "operations"
+      !needOperations || a.role === "operations"
         ? []
         : await (
             await collection("travelDocuments")
@@ -318,7 +429,7 @@ export async function snapshot(a: Actor) {
             .sort({ createdAt: -1 })
             .limit(1000)
             .toArray(),
-    operationsRequests: await (
+    operationsRequests: needSettlementLinks ? await (
       await collection("operationsRequests")
     )
       .find(
@@ -331,67 +442,138 @@ export async function snapshot(a: Actor) {
       )
       .sort({ createdAt: -1 })
       .limit(1000)
-      .toArray(),
+      .toArray() : [],
   };
-  const enqs = await (
+  const enquiryIsPrimary = scope === "enquiries";
+  const matchingCustomerIds = enquiryIsPrimary && matcher
+    ? await (await collection("customers")).find(
+        { org: a.org, $or: [{ name: matcher }, { phone: matcher }, { email: matcher }] },
+        { projection: { _id: 1 } },
+      ).limit(100).map((row) => row._id).toArray()
+    : [];
+  const enquiryFilter = {
+    org: a.org,
+    ...(a.role === "owner" ? {} : { assigneeId: a.id }),
+    ...(enquiryIsPrimary && status ? { stage: status } : {}),
+    ...(enquiryIsPrimary && assigneeId && a.role === "owner" ? { assigneeId } : {}),
+    ...(enquiryIsPrimary ? dateRange("updatedAt") : {}),
+    ...(enquiryIsPrimary && matcher
+      ? { $and: [{ $or: [{ destination: matcher }, { source: matcher }, { stage: matcher }, { customerId: { $in: matchingCustomerIds } }] }] }
+      : {}),
+  };
+  if (needEnquiries && enquiryIsPrimary)
+    setPagination(await (await collection("enquiries")).countDocuments(enquiryFilter));
+  let enqs = needEnquiries ? await (
     await collection("enquiries")
   )
-    .find({ org: a.org, ...(a.role === "owner" ? {} : { assigneeId: a.id }) })
+    .find(enquiryFilter)
     .sort({ updatedAt: -1 })
-    .limit(1000)
-    .toArray();
-  const customers =
-    a.role === "operations"
+    .skip(enquiryIsPrimary ? (page - 1) * pageSize : 0)
+    .limit(enquiryIsPrimary ? pageSize : scope === "dashboard" ? 100 : 200)
+    .toArray() : [];
+  const customerIsPrimary = scope === "customers";
+  const customerAccess = a.role === "owner"
+    ? {}
+    : {
+        $or: [
+          { assigneeId: a.id },
+          { _id: { $in: enqs.map((x) => x.customerId) } },
+        ],
+      };
+  const customerFilter = {
+    org: a.org,
+    ...customerAccess,
+    ...(!customerIsPrimary && ["enquiries", "quotations", "notifications"].includes(scope)
+      ? { _id: { $in: enqs.map((item) => item.customerId) } }
+      : {}),
+    ...(customerIsPrimary && status === "Needs review" ? { reviewNeeded: true } : {}),
+    ...(customerIsPrimary && status === "Ready" ? { reviewNeeded: { $ne: true } } : {}),
+    ...(customerIsPrimary && assigneeId && a.role === "owner" ? { assigneeId } : {}),
+    ...(customerIsPrimary ? dateRange("updatedAt") : {}),
+    ...(customerIsPrimary && matcher
+      ? { $and: [{ $or: [{ name: matcher }, { phone: matcher }, { email: matcher }] }] }
+      : {}),
+  };
+  if (needCustomers && customerIsPrimary)
+    setPagination(await (await collection("customers")).countDocuments(customerFilter));
+  let customers =
+    !needCustomers || a.role === "operations"
       ? []
       : await (
           await collection("customers")
         )
-          .find({
-            org: a.org,
-            ...(a.role === "owner"
-              ? {}
-              : {
-                  $or: [
-                    { assigneeId: a.id },
-                    { _id: { $in: enqs.map((x) => x.customerId) } },
-                  ],
-                }),
-          })
+          .find(customerFilter)
           .sort({ name: 1 })
-          .limit(1000)
+          .skip(customerIsPrimary ? (page - 1) * pageSize : 0)
+          .limit(customerIsPrimary ? pageSize : 250)
           .toArray();
-  const tasks = await (
+  const taskIsPrimary = scope === "tasks";
+  const taskFilter = {
+    org: a.org,
+    ...(a.role === "owner" ? {} : { assigneeId: a.id }),
+    ...(taskIsPrimary && status ? { status } : {}),
+    ...(taskIsPrimary && assigneeId && a.role === "owner" ? { assigneeId } : {}),
+    ...(taskIsPrimary ? dateRange("dueAt") : {}),
+    ...(taskIsPrimary && matcher ? { $and: [{ $or: [{ title: matcher }, { note: matcher }] }] } : {}),
+  };
+  if (needTasks && taskIsPrimary)
+    setPagination(await (await collection("tasks")).countDocuments(taskFilter));
+  const tasks = needTasks ? await (
     await collection("tasks")
   )
-    .find({ org: a.org, ...(a.role === "owner" ? {} : { assigneeId: a.id }) })
+    .find(taskFilter)
     .sort({ dueAt: 1 })
-    .limit(1000)
-    .toArray();
+    .skip(taskIsPrimary ? (page - 1) * pageSize : 0)
+    .limit(taskIsPrimary ? pageSize : 100)
+    .toArray() : [];
+  const quoteIsPrimary = scope === "quotations";
+  const quoteFilter = {
+    org: a.org,
+    ...(a.role === "owner" ? {} : { assigneeId: a.id }),
+    ...(quoteIsPrimary && status ? { status } : {}),
+    ...(quoteIsPrimary && assigneeId && a.role === "owner" ? { assigneeId } : {}),
+    ...(quoteIsPrimary ? dateRange("updatedAt") : {}),
+    ...(quoteIsPrimary && matcher
+      ? { $and: [{ $or: [{ quoteNumber: matcher }, { status: matcher }, { "content.title": matcher }] }] }
+      : {}),
+  };
+  if (needQuotes && quoteIsPrimary)
+    setPagination(await (await collection("quotes")).countDocuments(quoteFilter));
   const quotes =
-    a.role === "operations"
+    !needQuotes || a.role === "operations"
       ? []
       : (
           await (
             await collection("quotes")
           )
-            .find({
-              org: a.org,
-              ...(a.role === "owner" ? {} : { assigneeId: a.id }),
-            })
+            .find(quoteFilter)
             .sort({ updatedAt: -1 })
-            .limit(1000)
+            .skip(quoteIsPrimary ? (page - 1) * pageSize : 0)
+            .limit(quoteIsPrimary ? pageSize : scope === "bookings" ? 100 : 200)
             .toArray()
         ).map((q) => publicQuoteForRole(q, a.role));
-  const allowed = [
-    ...enqs,
-    ...customers,
-    ...tasks,
-    ...quotes,
-    ...phase3.bookings,
-    ...phase4.arrangements,
-    ...phase4.tripSegments,
-    ...phase4.incidents,
-  ].map((x) => x._id);
+  if (scope === "quotations" && quotes.length) {
+    const knownEnquiries = new Set(enqs.map((item) => item._id));
+    const missingEnquiryIds = quotes.map((item) => item.enquiryId).filter((item) => item && !knownEnquiries.has(item));
+    if (missingEnquiryIds.length) {
+      const related = await (await collection("enquiries")).find({
+        org: a.org,
+        _id: { $in: missingEnquiryIds },
+        ...(a.role === "owner" ? {} : { assigneeId: a.id }),
+      }).toArray();
+      enqs = [...enqs, ...related];
+    }
+    const knownCustomers = new Set(customers.map((item) => item._id));
+    const missingCustomerIds = quotes.map((item) => item.customerId).filter((item) => item && !knownCustomers.has(item));
+    if (missingCustomerIds.length) {
+      const related = await (await collection("customers")).find({
+        org: a.org,
+        _id: { $in: missingCustomerIds },
+        ...(a.role === "owner" ? {} : { assigneeId: a.id }),
+      }).toArray();
+      customers = [...customers, ...related];
+    }
+  }
   return {
     actor: a,
     enquiries: enqs,
@@ -401,7 +583,7 @@ export async function snapshot(a: Actor) {
     ...phase3,
     ...phase4,
     quoteTemplates:
-      a.role === "owner"
+      a.role === "owner" && needs("quotations")
         ? await (
             await collection("quoteTemplates")
           )
@@ -422,37 +604,40 @@ export async function snapshot(a: Actor) {
         },
       )
       .toArray(),
-    notifications: await (
-      await collection("notifications")
-    )
-      .find({
+    notificationUnread: await (await collection("notifications")).countDocuments({
+      org: a.org,
+      recipient: a.id,
+      read: { $ne: true },
+    }),
+    notifications: needNotificationRows ? await (async () => {
+      const notificationFilter = {
         org: a.org,
         recipient: a.id,
-        ...(a.role === "owner"
-          ? {}
-          : { $or: [{ recordId: { $in: allowed } }, { recordId: a.id }] }),
-      })
-      .sort({ createdAt: -1 })
-      .limit(200)
-      .toArray(),
-    activity: await (
-      await collection("activity")
+        ...(scope === "notifications" && status === "Unread" ? { read: { $ne: true } } : {}),
+        ...(scope === "notifications" && status === "Read" ? { read: true } : {}),
+        ...(scope === "notifications" ? dateRange("createdAt") : {}),
+        ...(scope === "notifications" && matcher ? { title: matcher } : {}),
+      };
+      if (scope === "notifications")
+        setPagination(await (await collection("notifications")).countDocuments(notificationFilter));
+      return (
+      await collection("notifications")
     )
-      .find({
-        org: a.org,
-        ...(a.role === "owner" ? {} : { recordId: { $in: a.role === "operations" ? tasks.map(t => t._id) : allowed } }),
-      })
+      .find(notificationFilter)
       .sort({ createdAt: -1 })
-      .limit(100)
-      .toArray(),
-    settings: await (async () => {
+      .skip(scope === "notifications" ? (page - 1) * pageSize : 0)
+      .limit(scope === "notifications" ? pageSize : 20)
+      .toArray();
+    })() : [],
+    activity: [],
+    settings: needs("staff") ? await (async () => {
       const value = await (await collection("settings")).findOne({ _id: a.org });
       return value
         ? { contactHours: value.contactHours, escalateHours: value.escalateHours }
         : null;
-    })(),
+    })() : null,
     invoiceTemplate:
-      a.role === "owner"
+      a.role === "owner" && needs("invoice-settings", "bookings")
         ? {
             ...defaultInvoiceTemplate,
             ...((await (
@@ -461,7 +646,7 @@ export async function snapshot(a: Actor) {
           }
         : null,
     imports:
-      a.role === "owner"
+      a.role === "owner" && needs("imports")
         ? await (
             await collection("importBatches")
           )
@@ -470,12 +655,9 @@ export async function snapshot(a: Actor) {
             .limit(50)
             .toArray()
         : [],
-    limited:
-      enqs.length === 1000 ||
-      customers.length === 1000 ||
-      tasks.length === 1000 ||
-      quotes.length === 1000 ||
-      phase3.bookings.length === 1000,
+    pagination,
+    limited: false,
+    scope,
   };
 }
 export async function saveCustomer(

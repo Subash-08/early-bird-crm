@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>EarlyBird enquiry-to-trip workflow</title>
+  <style>
+    :root{--navy:#123047;--blue:#1677a7;--sea:#25a878;--sand:#fff6e7;--coral:#df6b57;--line:#dbe6e8;--muted:#657984}
+    *{box-sizing:border-box}body{margin:0;background:#f4f8f8;color:var(--navy);font-family:Inter,Segoe UI,sans-serif}.page{max-width:1180px;margin:auto;padding:38px 22px 70px}h1{margin:0;font-size:clamp(28px,4vw,48px)}.lead{max-width:760px;color:var(--muted);line-height:1.65}.roles{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:28px 0}.role,.step{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 10px 28px rgba(18,48,71,.06)}.role{padding:20px}.role b{display:block;margin-bottom:7px}.role p{margin:0;color:var(--muted);line-height:1.5}.owner{border-top:4px solid var(--coral)}.sales{border-top:4px solid var(--blue)}.ops{border-top:4px solid var(--sea)}.flow{display:grid;gap:12px}.step{position:relative;padding:18px 20px 18px 76px}.step:before{content:attr(data-n);position:absolute;left:20px;top:17px;display:grid;place-items:center;width:38px;height:38px;border-radius:13px;background:var(--navy);color:#fff;font-weight:800}.step:not(:last-child):after{content:"";position:absolute;left:38px;top:56px;width:2px;height:26px;background:var(--line)}.step h2{margin:0 0 5px;font-size:17px}.step p{margin:0;color:var(--muted);line-height:1.5}.tag{display:inline-block;margin-right:8px;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800}.tag.owner{background:#fff0ed;color:#b74d3d;border:0}.tag.sales{background:#eaf6fb;color:#11638b;border:0}.tag.ops{background:#e8f7f1;color:#17745b;border:0}.gate{background:var(--sand)}.note{margin-top:24px;padding:18px 20px;border-left:4px solid var(--blue);background:#fff;border-radius:12px;color:var(--muted);line-height:1.6}@media(max-width:760px){.roles{grid-template-columns:1fr}.page{padding:25px 14px 55px}}
+  </style>
+</head>
+<body><main class="page">
+  <p>EARLYBIRD TRAVEL CRM</p><h1>One enquiry → completed trip</h1>
+  <p class="lead">This visual follows the permissions and gates implemented in the current code. Assignment, quotation approval, verified money, Operations release, trip completion and financial closure are deliberately separate.</p>
+  <section class="roles"><article class="role owner"><b>Owner</b><p>Assigns, prices, approves, verifies money, releases Operations and closes finance.</p></article><article class="role sales"><b>Sales</b><p>Calls the customer, gathers details, requests/shares the quote and records decisions/evidence.</p></article><article class="role ops"><b>Operations</b><p>Executes assigned travel, readiness, times and incidents without seeing commercial data.</p></article></section>
+  <section class="flow">
+    <article class="step" data-n="1"><h2><span class="tag owner">Owner</span>Capture and assign</h2><p>Select the existing customer, capture the enquiry and assign the Sales user.</p></article>
+    <article class="step" data-n="2"><h2><span class="tag sales">Sales</span>Call and qualify</h2><p>Record travellers, dates, hotel, services, pickup/drop, budget, next action and follow-up.</p></article>
+    <article class="step gate" data-n="3"><h2><span class="tag sales">Sales</span>Request quotation</h2><p>The system checks that enough information exists. Missing details return to Sales.</p></article>
+    <article class="step" data-n="4"><h2><span class="tag owner">Owner</span>Prepare and approve</h2><p>Create options, itinerary, price and terms; approve a locked version and generate the PDF.</p></article>
+    <article class="step" data-n="5"><h2><span class="tag sales">Sales</span>Share and record decision</h2><p>Record manual sharing. Accept one approved option, request changes, or reject with a reason.</p></article>
+    <article class="step" data-n="6"><h2><span class="tag sales">Sales</span>Create booking</h2><p>Convert the accepted quote once and complete payer, traveller and coordination information.</p></article>
+    <article class="step" data-n="7"><h2><span class="tag owner">Owner</span>Issue invoice</h2><p>Review billing/tax lines and issue the immutable customer invoice.</p></article>
+    <article class="step gate" data-n="8"><h2><span class="tag sales">Sales</span><span class="tag owner">Owner</span>Submit and verify advance</h2><p>Sales submits evidence. Only Owner verification changes paid totals.</p></article>
+    <article class="step" data-n="9"><h2><span class="tag owner">Owner</span>Release and assign Operations</h2><p>After the advance gate, assign staff, vehicles, segments and service checklist.</p></article>
+    <article class="step" data-n="10"><h2><span class="tag ops">Operations</span>Execute the trip</h2><p>Complete readiness and assigned segments; record times, notes and incidents.</p></article>
+    <article class="step gate" data-n="11"><h2><span class="tag ops">Operations</span>Complete trip</h2><p>Confirmed services, completed segments and resolved urgent incidents are required.</p></article>
+    <article class="step" data-n="12"><h2><span class="tag owner">Owner</span>Close settlement</h2><p>Resolve customer balance, supplier money, expenses, refunds and custody, then close finance.</p></article>
+  </section>
+  <div class="note"><b>Why Sales did not see Subash:</b> the enquiry was assigned to <b>earlybird</b> (Owner). Edit it and choose <b>User</b> under Assigned to. Sales access is intentionally assignment-based.</div>
+</main></body></html>

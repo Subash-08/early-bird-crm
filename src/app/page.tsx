@@ -1,2 +1,5 @@
-import { CrmApp } from '@/components/crm-app';
-export default function Home(){return <CrmApp/>;}
+import { redirect } from "next/navigation";
+
+export default function Home() {
+  redirect("/dashboard");
+}

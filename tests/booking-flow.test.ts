@@ -302,6 +302,34 @@ describe("Phase 3 booking and verified advance", () => {
     expect(opsSnapshot.payments).toEqual([]);
     expect(opsSnapshot.invoices).toEqual([]);
 
+    const dashboardSnapshot = await crm.snapshot(owner, "dashboard");
+    expect(dashboardSnapshot.scope).toBe("dashboard");
+    expect(dashboardSnapshot.bookings).toEqual([]);
+    expect(dashboardSnapshot.payments).toEqual([]);
+    expect(dashboardSnapshot.invoices).toEqual([]);
+
+    const bookingSnapshot = await crm.snapshot(owner, "bookings");
+    expect(bookingSnapshot.scope).toBe("bookings");
+    expect(bookingSnapshot.bookings).toHaveLength(1);
+    expect(bookingSnapshot.pagination.total).toBe(1);
+    expect(bookingSnapshot.pagination.pageSize).toBe(20);
+    expect(bookingSnapshot.arrangements).toEqual([]);
+    expect(bookingSnapshot.tripSegments).toEqual([]);
+
+    const filteredBookingSnapshot = await crm.snapshot(owner, "bookings", {
+      page: 1,
+      pageSize: 10,
+      status: "Cancelled",
+    });
+    expect(filteredBookingSnapshot.bookings).toEqual([]);
+    expect(filteredBookingSnapshot.pagination.total).toBe(0);
+
+    const customer = await crm.customerDetail(sales, "customer-1");
+    expect(customer.customer.name).toBe("Test Couple");
+    expect(customer.bookings).toHaveLength(1);
+    expect(customer.invoices).toHaveLength(1);
+    await expect(crm.customerDetail(operations, "customer-1")).rejects.toThrow("403");
+
     payment = await (
       await dbmod.collection("payments")
     ).findOne({ _id: second });

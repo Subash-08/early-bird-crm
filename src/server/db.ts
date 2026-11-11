@@ -41,14 +41,24 @@ export async function indexes() {
     d
       .collection("tasks")
       .createIndex({ org: 1, assigneeId: 1, status: 1, dueAt: 1 }),
+    d.collection("tasks").createIndex({ org: 1, dueAt: 1 }),
+    d.collection("tasks").createIndex({ org: 1, assigneeId: 1, dueAt: 1 }),
+    d.collection("tasks").createIndex({ org: 1, customerId: 1, dueAt: -1 }),
     d.collection("enquiries").createIndex({ org: 1, assigneeId: 1, stage: 1 }),
     d.collection("enquiries").createIndex({ org: 1, createdAt: -1, source: 1, stage: 1 }),
+    d.collection("enquiries").createIndex({ org: 1, updatedAt: -1 }),
+    d.collection("enquiries").createIndex({ org: 1, stage: 1, updatedAt: -1 }),
+    d.collection("enquiries").createIndex({ org: 1, customerId: 1, updatedAt: -1 }),
     d.collection("customers").createIndex({ org: 1, phone: 1 }),
     d.collection("customers").createIndex({ org: 1, name: 1 }),
     d.collection("customers").createIndex({ org: 1, email: 1 }),
+    d.collection("customers").createIndex({ org: 1, assigneeId: 1, updatedAt: -1 }),
     d
       .collection("notifications")
       .createIndex({ org: 1, recipient: 1, createdAt: -1 }),
+    d
+      .collection("notifications")
+      .createIndex({ org: 1, recipient: 1, read: 1, createdAt: -1 }),
     d
       .collection("rateLimits")
       .createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
@@ -62,6 +72,9 @@ export async function indexes() {
     d
       .collection("quotes")
       .createIndex({ org: 1, assigneeId: 1, updatedAt: -1 }),
+    d.collection("quotes").createIndex({ org: 1, updatedAt: -1 }),
+    d.collection("quotes").createIndex({ org: 1, status: 1, updatedAt: -1 }),
+    d.collection("quotes").createIndex({ org: 1, customerId: 1, updatedAt: -1 }),
     d
       .collection("documentJobs")
       .createIndex({ org: 1, status: 1, createdAt: 1 }),
@@ -80,6 +93,9 @@ export async function indexes() {
     d
       .collection("bookings")
       .createIndex({ org: 1, operationsAssigneeIds: 1, status: 1 }),
+    d.collection("bookings").createIndex({ org: 1, updatedAt: -1 }),
+    d.collection("bookings").createIndex({ org: 1, status: 1, serviceStart: 1, updatedAt: -1 }),
+    d.collection("bookings").createIndex({ org: 1, customerId: 1, updatedAt: -1 }),
     d
       .collection("payments")
       .createIndex({ org: 1, bookingId: 1, createdAt: -1 }),
@@ -98,6 +114,7 @@ export async function indexes() {
         { org: 1, invoiceNumber: 1 },
         { unique: true, sparse: true },
       ),
+    d.collection("invoices").createIndex({ org: 1, bookingId: 1, createdAt: -1 }),
     d
       .collection("invoiceTemplates")
       .createIndex(
@@ -124,6 +141,9 @@ export async function indexes() {
       .collection("tripSegments")
       .createIndex({ org: 1, vehicleId: 1, startAt: 1, endAt: 1 }),
     d
+      .collection("tripSegments")
+      .createIndex({ org: 1, bookingId: 1, startAt: 1 }),
+    d
       .collection("readinessItems")
       .createIndex({ org: 1, bookingId: 1, key: 1 }, { unique: true }),
     d
@@ -141,6 +161,21 @@ export async function indexes() {
     d
       .collection("operationsRequests")
       .createIndex({ org: 1, bookingId: 1, status: 1, createdAt: -1 }),
+    d
+      .collection("attendanceSessions")
+      .createIndex({ org: 1, staffId: 1, workDate: 1 }, { unique: true }),
+    d
+      .collection("attendanceSessions")
+      .createIndex({ org: 1, workDate: 1, status: 1 }),
+    d
+      .collection("attendanceEvents")
+      .createIndex({ org: 1, staffId: 1, createdAt: -1 }),
+    d
+      .collection("attendanceExceptions")
+      .createIndex({ org: 1, staffId: 1, workDate: 1, status: 1 }),
+    d
+      .collection("attendanceExceptions")
+      .createIndex({ org: 1, status: 1, createdAt: -1 }),
   ]);
   await d.collection("migrations").bulkWrite([
     { updateOne: { filter: { _id: "phase5-v1" as never }, update: { $setOnInsert: { appliedAt: new Date() } }, upsert: true } },
@@ -169,6 +204,13 @@ export async function indexes() {
       updateOne: {
         filter: { _id: "phase4-v1" as never },
         update: { $set: { appliedAt: new Date() } },
+        upsert: true,
+      },
+    },
+    {
+      updateOne: {
+        filter: { _id: "attendance-v1" as never },
+        update: { $setOnInsert: { appliedAt: new Date() } },
         upsert: true,
       },
     },

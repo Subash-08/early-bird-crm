@@ -16,6 +16,20 @@ const fixtures = [
   ["dev", "Dev Patel", "+919900000106", "dev.demo@example.test", "Manali and Shimla", "New", 6],
   ["sneha", "Sneha Iyer", "+919900000107", "sneha.demo@example.test", "Andaman", "Contacting", 7],
   ["vikram", "Vikram Rao", "+919900000108", "vikram.demo@example.test", "Coorg", "Lost", 14],
+  ["aditi", "Aditi Sharma", "+919900000109", "aditi.demo@example.test", "Wayanad", "New", 2],
+  ["naveen", "Naveen Kumar", "+919900000110", "naveen.demo@example.test", "Rameswaram", "Contacting", 3],
+  ["pooja", "Pooja & Arun", "+919900000111", "pooja.demo@example.test", "Mysuru", "Gathering details", 4],
+  ["imran", "Imran Ali", "+919900000112", "imran.demo@example.test", "Hyderabad", "New", 5],
+  ["kavya", "Kavya Nair", "+919900000113", "kavya.demo@example.test", "Thekkady", "Contacting", 6],
+  ["rohit", "Rohit Gupta", "+919900000114", "rohit.demo@example.test", "Pondicherry", "On hold", 8],
+  ["lakshmi", "Lakshmi & Hari", "+919900000115", "lakshmi.demo@example.test", "Madurai", "Gathering details", 9],
+  ["neha", "Neha Singh", "+919900000116", "neha.demo@example.test", "Kashmir", "New", 10],
+  ["sanjay", "Sanjay Das", "+919900000117", "sanjay.demo@example.test", "Darjeeling", "Contacting", 11],
+  ["tanya", "Tanya Roy", "+919900000118", "tanya.demo@example.test", "Gangtok", "Gathering details", 12],
+  ["gokul", "Gokul Raj", "+919900000119", "gokul.demo@example.test", "Yercaud", "New", 13],
+  ["divya", "Divya Menon", "+919900000120", "divya.demo@example.test", "Alappuzha", "Contacting", 14],
+  ["manoj", "Manoj & Riya", "+919900000121", "manoj.demo@example.test", "Mahabalipuram", "Gathering details", 15],
+  ["isha", "Isha Kapoor", "+919900000122", "isha.demo@example.test", "Amritsar", "New", 16],
 ] as const;
 
 async function main() {

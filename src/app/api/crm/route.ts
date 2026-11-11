@@ -8,7 +8,10 @@ import {
   acknowledge,
   settings,
   searchCustomers,
+  customerDetail,
 } from "@/server/crm";
+import type { WorkspaceScope } from "@/server/crm";
+import type { WorkspaceListQuery } from "@/server/crm";
 import { readUpload, preview, commit } from "@/server/imports";
 import { collection } from "@/server/db";
 import { submitSettlement, decideSettlement, submitBookingChange, decideBookingChange, confirmBookingChange, closeSettlement } from "@/server/settlements";
@@ -56,10 +59,11 @@ import {
   updateTripProgress,
 } from "@/server/operations";
 import { createInvoicePrintCopies, saveInvoiceDraft, saveInvoiceTemplate } from "@/server/invoices";
+import { publicErrorMessage } from "@/lib/public-error";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 function failure(e: unknown) {
-  const message = e instanceof Error ? e.message : "Request failed";
+  const message = publicErrorMessage(e);
   const status = Number(message.match(/^(401|403|404|409|429):/)?.[1] || 400);
   if (message.includes("E11000"))
     return Response.json(
@@ -95,7 +99,38 @@ export async function GET(req: Request) {
         { headers: { "Cache-Control": "private, no-store" } },
       );
     }
-    return Response.json(await snapshot(a), {
+    if (url.searchParams.get("resource") === "customer-detail") {
+      const id = String(url.searchParams.get("id") || "").trim();
+      if (!id || id.length > 160) throw new Error("404: Customer not found.");
+      return Response.json(await customerDetail(a, id), {
+        headers: { "Cache-Control": "private, no-store" },
+      });
+    }
+    const requestedScope = url.searchParams.get("scope") || "dashboard";
+    const scopes = new Set<WorkspaceScope>([
+      "all", "shell", "dashboard", "enquiries", "customers", "quotations", "bookings",
+      "operations", "settlements", "tasks", "notifications", "reports", "imports",
+      "invoice-settings", "staff", "attendance",
+    ]);
+    if (!scopes.has(requestedScope as WorkspaceScope))
+      throw new Error("404: Workspace page not found.");
+    const permitted =
+      a.role === "owner"
+        ? scopes.has(requestedScope as WorkspaceScope)
+        : a.role === "operations"
+          ? ["shell", "dashboard", "operations", "tasks", "notifications", "reports", "attendance"].includes(requestedScope)
+          : !["all", "imports", "invoice-settings", "staff"].includes(requestedScope);
+    if (!permitted) throw new Error("403: This workspace page is not available for your role.");
+    const listQuery: WorkspaceListQuery = {
+      page: Number(url.searchParams.get("page") || 1),
+      pageSize: Number(url.searchParams.get("pageSize") || 20),
+      query: url.searchParams.get("q") || "",
+      status: url.searchParams.get("status") || "",
+      assigneeId: url.searchParams.get("assigneeId") || "",
+      from: url.searchParams.get("from") || "",
+      to: url.searchParams.get("to") || "",
+    };
+    return Response.json(await snapshot(a, requestedScope as WorkspaceScope, listQuery), {
       headers: { "Cache-Control": "no-store" },
     });
   } catch (e) {

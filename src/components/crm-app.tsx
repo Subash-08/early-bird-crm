@@ -1,7 +1,10 @@
 "use client";
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { usePathname, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import { Login } from "./login";
+import { CustomerDetailPage } from "./customer-detail-page";
 import {
   LayoutDashboard,
   Users,
@@ -36,12 +39,14 @@ import {
   Download,
   ReceiptText,
 } from "lucide-react";
-import { Quotations } from "./quotations";
-import { Bookings } from "./bookings";
-import { Operations } from "./operations";
-import { Settlements } from "./settlements";
-import { Reports } from "./reports";
-import { InvoiceSettings } from "./invoice-settings";
+const RouteLoading = () => <section className="panel route-loading"><RefreshCw className="spin" /> Loading this workspace…</section>;
+const Quotations = dynamic(() => import("./quotations").then((module) => module.Quotations), { loading: RouteLoading });
+const Bookings = dynamic(() => import("./bookings").then((module) => module.Bookings), { loading: RouteLoading });
+const Operations = dynamic(() => import("./operations").then((module) => module.Operations), { loading: RouteLoading });
+const Settlements = dynamic(() => import("./settlements").then((module) => module.Settlements), { loading: RouteLoading });
+const Reports = dynamic(() => import("./reports").then((module) => module.Reports), { loading: RouteLoading });
+const InvoiceSettings = dynamic(() => import("./invoice-settings").then((module) => module.InvoiceSettings), { loading: RouteLoading });
+const Attendance = dynamic(() => import("./attendance").then((module) => module.Attendance), { loading: RouteLoading });
 
 type Row = Record<string, any> & { _id: string; version: number };
 type Snap = {
@@ -70,9 +75,14 @@ type Snap = {
   imports: Row[];
   settings?: Row;
   invoiceTemplate?: Row;
+  notificationUnread?: number;
+  scope?: string;
+  pagination?: { page: number; pageSize: number; total: number; totalPages: number };
   limited?: boolean;
 };
-type View =
+type ListFilters = { page: number; pageSize: number; status: string; assigneeId: string; from: string; to: string };
+const defaultListFilters: ListFilters = { page: 1, pageSize: 20, status: "", assigneeId: "", from: "", to: "" };
+export type View =
   | "dashboard"
   | "enquiries"
   | "customers"
@@ -85,7 +95,8 @@ type View =
   | "reports"
   | "imports"
   | "invoice-settings"
-  | "staff";
+  | "staff"
+  | "attendance";
 const emptyCustomer = {
   name: "",
   phone: "",
@@ -117,37 +128,98 @@ async function api(action: string, data: any = {}, more: any = {}) {
   return j.result;
 }
 
-export function CrmApp() {
+const routeViews: View[] = ["dashboard", "enquiries", "customers", "quotations", "bookings", "operations", "settlements", "tasks", "notifications", "reports", "imports", "invoice-settings", "staff", "attendance"];
+
+export function CrmApp({ initialView = "dashboard", customerId = "" }: { initialView?: View; customerId?: string }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const requestId = useRef(0);
   const [snap, setSnap] = useState<Snap | null>(null),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
-    [view, setView] = useState<View>("dashboard"),
+    [view, setView] = useState<View>(initialView),
     [moreOpen, setMoreOpen] = useState(false),
     [mobileSearch, setMobileSearch] = useState(false),
     [installPrompt, setInstallPrompt] = useState<any>(null),
     [offline, setOffline] = useState(false),
-    [search, setSearch] = useState("");
+    [search, setSearch] = useState(""),
+    [debouncedSearch, setDebouncedSearch] = useState(""),
+    [listFilters, setListFilters] = useState<ListFilters>(defaultListFilters),
+    [activeCustomerId, setActiveCustomerId] = useState(customerId);
   const load = useCallback(async () => {
+    const currentRequest = ++requestId.current;
     try {
-      const r = await fetch("/api/crm", { cache: "no-store" });
+      const params = new URLSearchParams({
+        scope: activeCustomerId ? "shell" : view,
+        page: String(listFilters.page),
+        pageSize: String(listFilters.pageSize),
+        q: debouncedSearch,
+        status: listFilters.status,
+        assigneeId: listFilters.assigneeId,
+        from: listFilters.from,
+        to: listFilters.to,
+      });
+      const r = await fetch(`/api/crm?${params}`, { cache: "no-store" });
+      if (currentRequest !== requestId.current) return;
       if (r.status === 401) {
         setSnap(null);
         return;
       }
-      if (r.status === 403) { setSnap(null); setError("Your access changed. Please sign in again or contact the Owner."); return; }
+      if (r.status === 403) {
+        setError("That page is not available for your role.");
+        if (view !== "dashboard") {
+          router.replace("/dashboard");
+          return;
+        }
+        setSnap(null);
+        return;
+      }
       const j = await r.json();
+      if (currentRequest !== requestId.current) return;
       if (!r.ok) throw new Error(j.error);
       setSnap(j);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load workspace");
     } finally {
-      setLoading(false);
+      if (currentRequest === requestId.current) setLoading(false);
     }
-  }, []);
+  }, [activeCustomerId, debouncedSearch, listFilters, router, view]);
+  useEffect(() => {
+    if (search.trim() === debouncedSearch) return;
+    const timer = window.setTimeout(() => {
+      setListFilters((current) => ({ ...current, page: 1 }));
+      setDebouncedSearch(search.trim());
+      setLoading(true);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [debouncedSearch, search]);
+  useEffect(() => {
+    const segments = pathname.split("/").filter(Boolean);
+    const segment = segments[0] as View | undefined;
+    const next = segment && routeViews.includes(segment) ? segment : initialView;
+    let routeCustomerId = "";
+    if (segment === "customers" && segments[1]) {
+      try { routeCustomerId = decodeURIComponent(segments[1]); }
+      catch { routeCustomerId = segments[1]; }
+    }
+    setActiveCustomerId((current) => {
+      if (current === routeCustomerId) return current;
+      setLoading(true);
+      return routeCustomerId;
+    });
+    if (next !== view) {
+      setLoading(true);
+      setSearch("");
+      setDebouncedSearch("");
+      setListFilters(defaultListFilters);
+      setView(next);
+    }
+  }, [initialView, pathname]);
   useEffect(() => {
     load();
     const refresh = () => { if (document.visibilityState === "visible") void load(); };
-    const timer = window.setInterval(refresh, 30000);
+    const liveViews: View[] = ["dashboard", "operations", "tasks", "notifications"];
+    const timer = window.setInterval(refresh, liveViews.includes(view) ? 30000 : 120000);
     window.addEventListener("focus", refresh);
     window.addEventListener("online", refresh);
     const connection = () => setOffline(!navigator.onLine);
@@ -155,7 +227,7 @@ export function CrmApp() {
     window.addEventListener("online", connection);
     window.addEventListener("offline", connection);
     return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); window.removeEventListener("online", refresh); window.removeEventListener("online", connection); window.removeEventListener("offline", connection); };
-  }, [load]);
+  }, [load, view]);
   useEffect(() => {
     if (!moreOpen) return;
     const previous = document.body.style.overflow;
@@ -170,6 +242,18 @@ export function CrmApp() {
     };
   }, [moreOpen]);
   useEffect(() => {
+    if (!snap) return;
+    const permitted = snap.actor.role === "owner"
+      ? routeViews
+      : snap.actor.role === "operations"
+        ? (["dashboard", "operations", "tasks", "notifications", "reports", "attendance"] as View[])
+        : routeViews.filter((item) => !["imports", "invoice-settings", "staff"].includes(item));
+    if (!permitted.includes(view)) {
+      setView("dashboard");
+      router.replace("/dashboard");
+    }
+  }, [router, snap, view]);
+  useEffect(() => {
     const available = (event: Event) => {
       event.preventDefault();
       setInstallPrompt(event);
@@ -182,7 +266,7 @@ export function CrmApp() {
       window.removeEventListener("appinstalled", installed);
     };
   }, []);
-  if (loading)
+  if (loading && !snap)
     return (
       <div className="skeleton-shell">
         <div />
@@ -208,6 +292,7 @@ export function CrmApp() {
             ["settlements", "Money & changes", ClipboardCheck],
           ]),
       ["tasks", "Tasks", CheckSquare],
+      ["attendance", "Attendance", Clock3],
       ["notifications", "Notifications", Bell],
       ["reports", "Reports", BarChart3],
       ...(role === "owner"
@@ -218,7 +303,7 @@ export function CrmApp() {
           ]
         : []),
     ] as [View, string, any][];
-  const unread = snap.notifications.filter((x) => !x.read).length;
+  const unread = Number(snap.notificationUnread ?? snap.notifications.filter((x) => !x.read).length);
   const mobilePrimary = (role === "operations"
     ? [
         ["dashboard", "Today", LayoutDashboard],
@@ -236,10 +321,17 @@ export function CrmApp() {
   const mobileSecondary = nav.filter(([id]) => !mobilePrimaryIds.has(id));
   const secondaryActive = mobileSecondary.some(([id]) => id === view);
   const openView = (next: View) => {
-    setView(next);
     setMoreOpen(false);
     setMobileSearch(false);
-    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+    if (next !== view || activeCustomerId) {
+      setLoading(true);
+      setSearch("");
+      setDebouncedSearch("");
+      setListFilters(defaultListFilters);
+      setActiveCustomerId("");
+      window.history.pushState(null, "", `/${next}`);
+      setView(next);
+    }
   };
   const signOut = async () => {
     await authClient.signOut();
@@ -261,6 +353,7 @@ export function CrmApp() {
               key={id}
               className={view === id ? "active" : ""}
               onClick={() => openView(id)}
+              onMouseEnter={() => router.prefetch(`/${id}`)}
             >
               <Icon />
               {label}
@@ -308,14 +401,14 @@ export function CrmApp() {
             <h1>{nav.find((x) => x[0] === view)?.[1]}</h1>
           </div>
           <div className="top-actions">
-            <label className="search">
+            {!activeCustomerId && <label className="search">
               <Search />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search this page"
               />
-            </label>
+            </label>}
             <button
               className="icon-button mobile-search-trigger"
               aria-label="Search this screen"
@@ -355,19 +448,36 @@ export function CrmApp() {
             </button>
           </div>
         )}
-        <section className="content">
+        <section className={`content${loading ? " content-loading" : ""}`} aria-busy={loading}>
+          {loading ? (
+            <RouteLoading />
+          ) : (
+            <>
+          {isPagedView(view) && !activeCustomerId && (
+            <ListFiltersBar
+              view={view}
+              role={role}
+              staff={snap.staff}
+              value={listFilters}
+              change={(next) => {
+                setLoading(true);
+                setListFilters({ ...next, page: 1 });
+              }}
+            />
+          )}
           {snap.limited && (
             <div className="banner">
               Large workspace: the newest 1,000 records are shown. Use search
               and filters to narrow the list.
             </div>
           )}
-          {view === "dashboard" && <Dashboard s={snap} go={setView} />}{" "}
+          {view === "dashboard" && <Dashboard s={snap} go={openView} />}{" "}
           {view === "enquiries" && (
             <Enquiries s={snap} q={search} reload={load} fail={setError} />
           )}{" "}
-          {view === "customers" && (
-            <Customers s={snap} q={search} reload={load} fail={setError} />
+          {view === "customers" && activeCustomerId && <CustomerDetailPage id={activeCustomerId} embedded back={() => { window.history.pushState(null, "", "/customers"); setActiveCustomerId(""); setLoading(true); }} />}
+          {view === "customers" && !activeCustomerId && (
+            <Customers s={snap} q={search} reload={load} fail={setError} openDetail={(id) => { window.history.pushState(null, "", `/customers/${encodeURIComponent(id)}`); setActiveCustomerId(id); setLoading(true); }} />
           )}{" "}
           {view === "quotations" && (
             <Quotations s={snap} q={search} reload={load} fail={setError} />
@@ -386,11 +496,12 @@ export function CrmApp() {
             <Notifications
               s={snap}
               reload={load}
-              go={setView}
+              go={openView}
               fail={setError}
             />
           )}{" "}
           {view === "reports" && <Reports s={snap} fail={setError} />}{" "}
+          {view === "attendance" && <Attendance role={role} fail={setError} />}{" "}
           {view === "imports" && (
             <Imports s={snap} reload={load} fail={setError} />
           )}{" "}
@@ -398,6 +509,18 @@ export function CrmApp() {
             <InvoiceSettings s={snap} reload={load} fail={setError} />
           )}{" "}
           {view === "staff" && <Staff s={snap} reload={load} fail={setError} />}
+          {isPagedView(view) && !activeCustomerId && snap.pagination && (
+            <PaginationBar
+              value={snap.pagination}
+              change={(page) => {
+                setLoading(true);
+                setListFilters((current) => ({ ...current, page }));
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+            />
+          )}
+            </>
+          )}
         </section>
       </main>
       <nav className="mobile-bottom-nav" aria-label="Primary mobile navigation">
@@ -408,6 +531,7 @@ export function CrmApp() {
             className={view === id ? "active" : ""}
             aria-current={view === id ? "page" : undefined}
             onClick={() => openView(id)}
+            onMouseEnter={() => router.prefetch(`/${id}`)}
           >
             <span><Icon />{id === "notifications" && unread > 0 && <em>{unread > 9 ? "9+" : unread}</em>}</span>
             <small>{label}</small>
@@ -436,7 +560,7 @@ export function CrmApp() {
             {mobileSecondary.length > 0 && (
               <div className="mobile-more-grid">
                 {mobileSecondary.map(([id, label, Icon]) => (
-                  <button type="button" key={id} className={view === id ? "active" : ""} onClick={() => openView(id)}>
+                  <button type="button" key={id} className={view === id ? "active" : ""} onMouseEnter={() => router.prefetch(`/${id}`)} onClick={() => openView(id)}>
                     <span><Icon />{id === "notifications" && unread > 0 && <em>{unread}</em>}</span>
                     <b>{label}</b>
                   </button>
@@ -625,6 +749,94 @@ function PanelHead({
     </div>
   );
 }
+
+const pagedViews: View[] = [
+  "customers", "enquiries", "quotations", "bookings", "operations",
+  "settlements", "tasks", "notifications",
+];
+const isPagedView = (view: View) => pagedViews.includes(view);
+const filterStatuses: Partial<Record<View, string[]>> = {
+  customers: ["Ready", "Needs review"],
+  enquiries: ["New", "Contacting", "Gathering details", "Quote requested", "Quote sent", "Won", "On hold", "Lost"],
+  quotations: ["Requested", "Draft", "Needs information", "Pending approval", "Approved", "Accepted", "Rejected", "Expired", "Superseded"],
+  bookings: ["Awaiting advance", "Ready for operations release", "Operations released", "Trip completed", "Cancelled"],
+  operations: ["Operations released", "In progress", "Trip completed", "Cancelled"],
+  settlements: ["Operations released", "Trip completed", "Cancelled"],
+  tasks: ["To do", "In progress", "Waiting", "Done", "Cancelled"],
+  notifications: ["Unread", "Read"],
+};
+
+function ListFiltersBar({
+  view,
+  role,
+  staff,
+  value,
+  change,
+}: {
+  view: View;
+  role: Snap["actor"]["role"];
+  staff: Row[];
+  value: ListFilters;
+  change: (value: ListFilters) => void;
+}) {
+  const update = (key: keyof ListFilters, next: string | number) =>
+    change({ ...value, [key]: next });
+  const showAssignee = role === "owner" && !["customers", "notifications"].includes(view);
+  return (
+    <section className="list-filters" aria-label="List filters">
+      <label>
+        <span>Status</span>
+        <select value={value.status} onChange={(event) => update("status", event.target.value)}>
+          <option value="">All statuses</option>
+          {(filterStatuses[view] || []).map((item) => <option key={item}>{item}</option>)}
+        </select>
+      </label>
+      {showAssignee && (
+        <label>
+          <span>Assigned to</span>
+          <select value={value.assigneeId} onChange={(event) => update("assigneeId", event.target.value)}>
+            <option value="">All staff</option>
+            {staff.filter((person) => person.status === "active").map((person) => (
+              <option key={person._id} value={person._id}>{person.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      <label><span>From</span><input type="date" value={value.from} onChange={(event) => update("from", event.target.value)} /></label>
+      <label><span>To</span><input type="date" value={value.to} min={value.from} onChange={(event) => update("to", event.target.value)} /></label>
+      <label>
+        <span>Rows</span>
+        <select value={value.pageSize} onChange={(event) => update("pageSize", Number(event.target.value))}>
+          {[10, 20, 50].map((size) => <option key={size} value={size}>{size}</option>)}
+        </select>
+      </label>
+      {(value.status || value.assigneeId || value.from || value.to) && (
+        <button type="button" className="button secondary" onClick={() => change({ ...defaultListFilters, pageSize: value.pageSize })}>Clear filters</button>
+      )}
+    </section>
+  );
+}
+
+function PaginationBar({
+  value,
+  change,
+}: {
+  value: NonNullable<Snap["pagination"]>;
+  change: (page: number) => void;
+}) {
+  const first = value.total ? (value.page - 1) * value.pageSize + 1 : 0;
+  const last = Math.min(value.total, value.page * value.pageSize);
+  return (
+    <nav className="pagination" aria-label="List pages">
+      <span>{first}–{last} of {value.total}</span>
+      <div>
+        <button className="button secondary" disabled={value.page <= 1} onClick={() => change(value.page - 1)}><ChevronLeft /> Previous</button>
+        <b>Page {value.page} of {value.totalPages}</b>
+        <button className="button secondary" disabled={value.page >= value.totalPages} onClick={() => change(value.page + 1)}>Next <ChevronRight /></button>
+      </div>
+    </nav>
+  );
+}
 function Empty({
   icon: Icon,
   title,
@@ -650,11 +862,13 @@ function Customers({
   q,
   reload,
   fail,
+  openDetail,
 }: {
   s: Snap;
   q: string;
   reload: () => Promise<void>;
   fail: (x: string) => void;
+  openDetail: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false),
     [edit, setEdit] = useState<Row | null>(null),
@@ -699,19 +913,18 @@ function Customers({
       <section className="panel table-panel">
         <div className="cards-list">
           {rows.map((r) => (
-            <button
-              className="record-card"
-              key={r._id}
-              onClick={() => start(r)}
-            >
-              <span className="avatar">{r.name.slice(0, 2).toUpperCase()}</span>
-              <div className="record-main">
-                <b>{r.name}</b>
-                <small>{r.phone || r.email || "Contact needs review"}</small>
-              </div>
-              <Badge value={r.reviewNeeded ? "Needs review" : "Customer"} />
-              <ArrowRight />
-            </button>
+            <div className="record-card customer-record-card" key={r._id}>
+              <button className="customer-record-main" onClick={() => openDetail(r._id)}>
+                <span className="avatar">{r.name.slice(0, 2).toUpperCase()}</span>
+                <div className="record-main">
+                  <b>{r.name}</b>
+                  <small>{r.phone || r.email || "Contact needs review"}</small>
+                </div>
+                <Badge value={r.reviewNeeded ? "Needs review" : "Customer"} />
+                <ArrowRight />
+              </button>
+              <button className="customer-edit-button" onClick={() => start(r)}>Edit</button>
+            </div>
           ))}
           {!rows.length && (
             <Empty
@@ -834,7 +1047,7 @@ function Enquiries({
     source: "WhatsApp",
     assigneeId:
       s.actor.role === "owner"
-        ? s.staff.find((x) => x.role !== "operations" && x.status === "active")
+        ? s.staff.find((x) => x.role === "sales" && x.status === "active")
             ?._id || s.actor.id
         : s.actor.id,
     stage: "New",
@@ -890,14 +1103,41 @@ function Enquiries({
       fail("Search for a customer and choose an exact result.");
       return;
     }
+    if (data.nextFollowUp && !String(data.nextAction || "").trim()) {
+      fail("Enter the next action before scheduling a follow-up.");
+      return;
+    }
     setBusy(true);
     try {
       const payload = {
-        ...data,
+        customerId: data.customerId,
+        destination: data.destination || "",
+        source: data.source,
+        assigneeId: data.assigneeId,
+        stage: data.stage,
         firstContactAt: iso(data.firstContactAt),
+        dateMode: data.dateMode,
+        departure: data.departure || "",
+        returnDate: data.returnDate || "",
+        travelPreference: data.travelPreference || "",
         nextFollowUp: iso(data.nextFollowUp),
+        nextAction: data.nextAction || "",
         adults: data.adults === "" ? null : Number(data.adults),
+        childrenAges: data.childrenAges || "",
         infants: Number(data.infants || 0),
+        budget: data.budget || "",
+        budgetBasis: data.budgetBasis,
+        services: data.services || "",
+        serviceResponsibility: data.serviceResponsibility || "",
+        hotelPreference: data.hotelPreference || "",
+        rooms: data.rooms || "",
+        pickup: data.pickup || "",
+        dropoff: data.dropoff || "",
+        specialRequirements: data.specialRequirements || "",
+        notes: data.notes || "",
+        reason: data.reason || "",
+        contactOutcome: data.contactOutcome,
+        reviewNeeded: Boolean(data.reviewNeeded),
       };
       await api("enquiry", payload, { id: edit?._id, version: edit?.version });
       setOpen(false);
@@ -934,14 +1174,10 @@ function Enquiries({
         <button
           className="button primary"
           onClick={() => start()}
-          disabled={!s.customers.length}
         >
           <Plus /> New enquiry
         </button>
       </div>
-      {!s.customers.length && (
-        <div className="banner">Add a customer before creating an enquiry.</div>
-      )}
       <section className="panel table-panel">
         <div className="data-table">
           <div className="table-row table-head">
@@ -949,7 +1185,7 @@ function Enquiries({
             <span>Destination</span>
             <span>Stage</span>
             <span>Next action</span>
-            <span>Owner</span>
+            <span>Assigned to</span>
             <span />
           </div>
           {rows.map((r) => (
@@ -990,6 +1226,9 @@ function Enquiries({
           wide
         >
           <form className="form-grid" onSubmit={save}>
+            <p className="form-guidance span">
+              Fields marked * are required. Complete the other fields as the customer shares more information.
+            </p>
             <CustomerSearch
               value={data.customerId}
               set={(v: any) => setData({ ...data, customerId: v })}
@@ -1008,6 +1247,7 @@ function Enquiries({
                 "Walk-in",
                 "Other",
               ]}
+              required
             />
             <Field
               label="Destination or place"
@@ -1022,6 +1262,8 @@ function Enquiries({
                 .filter((x) => x.status === "active" && x.role !== "operations")
                 .map((x) => [x._id, x.name])}
               disabled={s.actor.role !== "owner"}
+              required
+              hint="Only the assigned Sales person can see and work on this enquiry."
             />
             <Select
               label="Stage"
@@ -1037,6 +1279,7 @@ function Enquiries({
                 "On hold",
                 "Lost",
               ]}
+              required
             />
             <Select
               label="Call outcome"
@@ -1126,9 +1369,10 @@ function Enquiries({
               value={data.nextAction}
               set={(v: any) => setData({ ...data, nextAction: v })}
               placeholder="Call to confirm hotel category"
+              required={Boolean(data.nextFollowUp)}
             />
             <Field
-              label="Next follow-up"
+              label="Next follow-up (optional)"
               type="datetime-local"
               value={data.nextFollowUp}
               set={(v: any) => setData({ ...data, nextFollowUp: v })}
@@ -1191,6 +1435,11 @@ function Tasks({
   const rows = s.tasks.filter((x) =>
     [x.title, x.status].join(" ").toLowerCase().includes(q.toLowerCase()),
   );
+  const noteRequired = Boolean(
+    edit &&
+      (local(edit.dueAt) !== data.dueAt ||
+        ["Waiting", "Done", "Cancelled"].includes(data.status)),
+  );
   function start(r?: Row) {
     setEdit(r || null);
     setData(
@@ -1214,7 +1463,15 @@ function Tasks({
     try {
       await api(
         "task",
-        { ...data, dueAt: iso(data.dueAt) },
+        {
+          title: data.title,
+          assigneeId: data.assigneeId,
+          dueAt: iso(data.dueAt),
+          status: data.status,
+          note: data.note || "",
+          enquiryId: data.enquiryId || "",
+          customerId: data.customerId || "",
+        },
         { id: edit?._id, version: edit?.version },
       );
       setOpen(false);
@@ -1354,7 +1611,8 @@ function Tasks({
               set={(v: any) => setData({ ...data, note: v })}
               area
               span
-              placeholder="Required when completing, waiting or rescheduling"
+              placeholder="Required when completing, cancelling, waiting or rescheduling"
+              required={noteRequired}
             />
             <FormFoot busy={busy} />
           </form>
@@ -1379,19 +1637,13 @@ function Notifications({
     try {
       await api("read", {}, { id: n._id });
       await reload();
-      go(
-        s.actor.role === "operations"
-          ? s.bookings.some((x) => x._id === n.recordId)
-            ? "operations"
-            : "tasks"
-          : s.bookings.some((x) => x._id === n.recordId)
-            ? /^(finance-|settlement-|change-|customer-change:)/.test(n._id) ? "settlements" : "bookings"
-            : s.quotes.some((x) => x._id === n.recordId)
-              ? "quotations"
-              : n.recordId?.startsWith("follow:")
-                ? "tasks"
-                : "enquiries",
-      );
+      const key = String(n._id || "");
+      if (/^(trip:|operations-|incident:|collection:|handover:|readiness:)/.test(key)) go("operations");
+      else if (s.actor.role !== "operations" && /^(settlement-|change-|customer-change:)/.test(key)) go("settlements");
+      else if (s.actor.role !== "operations" && /^(booking:|invoice:|payment:|finance-)/.test(key)) go("bookings");
+      else if (s.actor.role !== "operations" && /^quote/.test(key)) go("quotations");
+      else if (/^(task:|due:|overdue:|follow:|reassign:)/.test(key)) go("tasks");
+      else go(s.actor.role === "operations" ? "tasks" : "enquiries");
     } catch (e) {
       fail((e as Error).message);
     }
@@ -2025,7 +2277,7 @@ function Field({
 }: any) {
   return (
     <label className={span ? "field span" : "field"}>
-      <span>{label}</span>
+      <span>{label}{props.required ? " *" : ""}</span>
       {area ? (
         <textarea
           value={value ?? ""}
@@ -2051,7 +2303,8 @@ function CustomerSearch({ value, set, selected }: any) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    setText(selected?.name || "");
+    if (selected?.name) setText(selected.name);
+    else if (!value) setText("");
   }, [value, selected?.name]);
 
   useEffect(() => {
@@ -2093,7 +2346,7 @@ function CustomerSearch({ value, set, selected }: any) {
 
   return (
     <label className="field customer-search">
-      <span>Customer</span>
+      <span>Customer *</span>
       <div className="customer-search-control">
         <Search aria-hidden="true" />
         <input
@@ -2138,19 +2391,22 @@ function CustomerSearch({ value, set, selected }: any) {
         </div>
       )}
       <small className={value ? "customer-search-selected" : ""}>
-        {value ? "Customer selected" : "Type at least 2 characters, then choose a result."}
+        {value
+          ? `Selected: ${selected?.name || text || "customer"}`
+          : "Type at least 2 characters, then choose a result."}
       </small>
     </label>
   );
 }
-function Select({ label, value, set, options, disabled = false }: any) {
+function Select({ label, value, set, options, disabled = false, required = false, hint = "" }: any) {
   return (
     <label className="field">
-      <span>{label}</span>
+      <span>{label}{required ? " *" : ""}</span>
       <select
         value={value}
         onChange={(e) => set(e.target.value)}
         disabled={disabled}
+        required={required}
       >
         {options.map((x: any) => {
           const [v, l] = Array.isArray(x) ? x : [x, x];
@@ -2161,6 +2417,7 @@ function Select({ label, value, set, options, disabled = false }: any) {
           );
         })}
       </select>
+      {hint && <small className="field-hint">{hint}</small>}
     </label>
   );
 }

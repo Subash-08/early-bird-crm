@@ -1,5 +1,9 @@
 # Complete manual acceptance guide — Owner, Sales and Operations
 
+> Start with `docs/manual-test-with-current-accounts.md` for the recommended run order using the current Owner, Sales and three Operations browser sessions. Use this document afterward for exhaustive rule-by-rule sign-off.
+
+> The detailed production simulation reuses the current 23-customer seeded database (including Rahul, Ananya, Meera, Dev, Arjun, Sneha and Subash) for invoice variants, multi-driver scheduling, cancellation/refund/recovery and cross-role steps. It is in `docs/production-like-manual-test-scenarios.md`.
+
 This is the final business acceptance script for the complete CRM. Run it in a staging/development database with fictional people, amounts and documents. Do not use real passports, bank evidence or customer contact details until production security and retention are approved.
 
 Record every result as **Pass**, **Fail**, **Blocked** or **Not applicable**, with the tester, date, role, record number, expected result, actual result and screenshot/error text.
