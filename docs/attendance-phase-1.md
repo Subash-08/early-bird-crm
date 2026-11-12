@@ -36,6 +36,10 @@ Sales and Operations can use **Show my location** to preview their own reported 
 
 ## Correction workflow
 
+Use **My attendance** for Today, Last 7 days, This month, or a custom range of up to 93 days (India time). Staff see only their own rows. The Owner can select **View activity** next to a team member in **Team & setup** to see the same totals alongside due tasks, logged completions and calls, and driver assignments. Recorded hours count completed work sessions; a missed checkout is not estimated. To record a call, choose its outcome in the enquiry and select **Log this as a new contact attempt** before saving.
+
+Owners can choose a date in the attendance calendar, view the day's summary, and mark or remove a named holiday. A holiday blocks regular check-ins and keeps existing attendance. Sales and Operations can submit **Request off-site attendance** after completing company work. Enter the date, start and end times in IST, work location, reason, and an optional task or booking reference. The Owner reviews it in **Requests to review**. Approval marks the day **Present · Off-site**; original clock events are preserved.
+
 1. Staff submit a date, requested check-in/check-out time, and reason.
 2. The Owner receives an in-app notification.
 3. The Owner approves or rejects it with an audited decision.

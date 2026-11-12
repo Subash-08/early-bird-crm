@@ -47,6 +47,7 @@ const Settlements = dynamic(() => import("./settlements").then((module) => modul
 const Reports = dynamic(() => import("./reports").then((module) => module.Reports), { loading: RouteLoading });
 const InvoiceSettings = dynamic(() => import("./invoice-settings").then((module) => module.InvoiceSettings), { loading: RouteLoading });
 const Attendance = dynamic(() => import("./attendance").then((module) => module.Attendance), { loading: RouteLoading });
+const TeamActivity = dynamic(() => import("./activity-panel").then((module) => module.ActivityPanel), { loading: RouteLoading });
 
 type Row = Record<string, any> & { _id: string; version: number };
 type Snap = {
@@ -133,6 +134,11 @@ const routeViews: View[] = ["dashboard", "enquiries", "customers", "quotations",
 export function CrmApp({ initialView = "dashboard", customerId = "" }: { initialView?: View; customerId?: string }) {
   const router = useRouter();
   const pathname = usePathname();
+  const activitySegment = pathname.match(/^\/staff\/activity\/([^/]+)\/?$/)?.[1];
+  let activityMemberId = activitySegment || "";
+  if (activitySegment) {
+    try { activityMemberId = decodeURIComponent(activitySegment); } catch { /* Invalid IDs show the not-found state. */ }
+  }
   const requestId = useRef(0);
   const [snap, setSnap] = useState<Snap | null>(null),
     [loading, setLoading] = useState(true),
@@ -268,12 +274,16 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
   }, []);
   if (loading && !snap)
     return (
-      <div className="skeleton-shell">
-        <div />
-        <div>
+      <div className="skeleton-shell" role="status" aria-label="Loading workspace">
+        <div className="skeleton-sidebar" aria-hidden="true" />
+        <div className="skeleton-body" aria-hidden="true">
+          <div className="skeleton-mobile-header"><i /><i /></div>
           <i />
           <i />
           <i />
+        </div>
+        <div className="skeleton-mobile-nav" aria-hidden="true">
+          {Array.from({ length: 5 }, (_, index) => <i key={index} />)}
         </div>
       </div>
     );
@@ -323,6 +333,10 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
   const openView = (next: View) => {
     setMoreOpen(false);
     setMobileSearch(false);
+    if (next === "staff" && view === "staff" && activityMemberId) {
+      window.history.pushState(null, "", "/staff");
+      return;
+    }
     if (next !== view || activeCustomerId) {
       setLoading(true);
       setSearch("");
@@ -398,7 +412,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
                 month: "long",
               })}
             </p>
-            <h1>{nav.find((x) => x[0] === view)?.[1]}</h1>
+            <h1>{view === "staff" && activityMemberId ? "Team activity" : nav.find((x) => x[0] === view)?.[1]}</h1>
           </div>
           <div className="top-actions">
             {!activeCustomerId && <label className="search">
@@ -508,7 +522,13 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
           {view === "invoice-settings" && (
             <InvoiceSettings s={snap} reload={load} fail={setError} />
           )}{" "}
-          {view === "staff" && <Staff s={snap} reload={load} fail={setError} />}
+          {view === "staff" && snap.actor.role === "owner" && (activityMemberId
+            ? <StaffActivityDetail key={activityMemberId} s={snap} memberId={activityMemberId} back={() => openView("staff")} />
+            : <Staff s={snap} reload={load} fail={setError} viewActivity={(id) => {
+              setMobileSearch(false);
+              window.history.pushState(null, "", `/staff/activity/${encodeURIComponent(id)}`);
+              window.scrollTo(0, 0);
+            }} />)}
           {isPagedView(view) && !activeCustomerId && snap.pagination && (
             <PaginationBar
               value={snap.pagination}
@@ -1139,7 +1159,7 @@ function Enquiries({
         contactOutcome: data.contactOutcome,
         reviewNeeded: Boolean(data.reviewNeeded),
       };
-      await api("enquiry", payload, { id: edit?._id, version: edit?.version });
+      await api("enquiry", payload, { id: edit?._id, version: edit?.version, logContact: data.logContact === true });
       setOpen(false);
       await reload();
     } catch (e) {
@@ -1284,9 +1304,12 @@ function Enquiries({
             <Select
               label="Call outcome"
               value={data.contactOutcome}
-              set={(v: any) => setData({ ...data, contactOutcome: v })}
+              set={(v: any) => setData({ ...data, contactOutcome: v, logContact: v === "Not contacted" ? false : data.logContact })}
               options={["Not contacted", "Connected", "No answer", "Call back"]}
             />
+            {data.contactOutcome !== "Not contacted" && !data.reviewNeeded && <label className="check-row span">
+              <input type="checkbox" checked={data.logContact === true} onChange={(event) => setData({ ...data, logContact: event.target.checked })} /> Log this as a new contact attempt
+            </label>}
             <Field
               label="First contact"
               type="datetime-local"
@@ -1638,7 +1661,8 @@ function Notifications({
       await api("read", {}, { id: n._id });
       await reload();
       const key = String(n._id || "");
-      if (/^(trip:|operations-|incident:|collection:|handover:|readiness:)/.test(key)) go("operations");
+      if (key.startsWith("attendance-")) go("attendance");
+      else if (/^(trip:|operations-|incident:|collection:|handover:|readiness:)/.test(key)) go("operations");
       else if (s.actor.role !== "operations" && /^(settlement-|change-|customer-change:)/.test(key)) go("settlements");
       else if (s.actor.role !== "operations" && /^(booking:|invoice:|payment:|finance-)/.test(key)) go("bookings");
       else if (s.actor.role !== "operations" && /^quote/.test(key)) go("quotations");
@@ -1681,14 +1705,26 @@ function Notifications({
   );
 }
 
+function StaffActivityDetail({ s, memberId, back }: { s: Snap; memberId: string; back: () => void }) {
+  const member = s.staff.find((person) => person._id === memberId);
+  return <div className="staff-activity-detail">
+    <button type="button" className="button secondary" onClick={back}><ChevronLeft /> Back to team</button>
+    <section className="panel">
+      {member ? <TeamActivity memberId={memberId} memberName={String(member.name)} /> : <p>Team member not found.</p>}
+    </section>
+  </div>;
+}
+
 function Staff({
   s,
   reload,
   fail,
+  viewActivity,
 }: {
   s: Snap;
   reload: () => Promise<void>;
   fail: (x: string) => void;
+  viewActivity: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false),
     [edit, setEdit] = useState<Row | null>(null),
@@ -1707,7 +1743,7 @@ function Staff({
     setEdit(r || null);
     setData(
       r
-        ? { ...r, replacementId: "", reset: false }
+        ? { ...r, capabilities: Array.isArray(r.capabilities) ? r.capabilities : [], replacementId: "", reset: false }
         : {
             name: "",
             email: "",
@@ -1778,11 +1814,8 @@ function Staff({
       <section className="panel">
         <div className="cards-list">
           {s.staff.map((r) => (
-            <button
-              className="record-card"
-              key={r._id}
-              onClick={() => start(r)}
-            >
+            <div className="staff-account-row" key={r._id}>
+            <button className="record-card" onClick={() => start(r)} aria-label={`Manage account for ${r.name}`}>
               <span className="avatar">{r.name.slice(0, 2).toUpperCase()}</span>
               <div className="record-main">
                 <b>{r.name}</b>
@@ -1792,13 +1825,15 @@ function Staff({
               <span className="role-label">{r.role}</span>
               <ArrowRight />
             </button>
+            {!["pending", "invited"].includes(r.status) && <button type="button" className="button secondary staff-activity-button" onClick={() => viewActivity(r._id)} aria-label={`View activity for ${r.name}`}><BarChart3 /> View activity</button>}
+            </div>
           ))}
         </div>
       </section>
       <section className="panel settings-panel">
         <PanelHead
           title="Follow-up rules"
-          sub="When the system should flag untouched work"
+          sub="Set the default contact deadline for new enquiries and when the Owner is alerted about overdue tasks."
         />
         <RuleSettings s={s} reload={reload} fail={fail} />
       </section>

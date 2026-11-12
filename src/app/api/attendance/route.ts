@@ -1,6 +1,7 @@
 import { actor, limit } from "@/server/auth";
 import { attendanceOverview, checkIn, checkOut, decideAttendanceCorrection, requestAttendanceCorrection, saveAttendancePolicy } from "@/server/attendance";
 import { publicErrorMessage } from "@/lib/public-error";
+import { removeAttendanceHoliday, requestOffsiteAttendance, saveAttendanceHoliday } from "@/server/attendance";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,6 +31,9 @@ export async function POST(request: Request) {
       case "check-in": await limit(`attendance:${a.id}`); result = await checkIn(a, body.data); break;
       case "check-out": await limit(`attendance:${a.id}`); result = await checkOut(a, body.data); break;
       case "correction": result = await requestAttendanceCorrection(a, body.data); break;
+      case "offsite": result = await requestOffsiteAttendance(a, body.data); break;
+      case "holiday-save": result = await saveAttendanceHoliday(a, body.data); break;
+      case "holiday-remove": result = await removeAttendanceHoliday(a, body.data); break;
       case "correction-decision": result = await decideAttendanceCorrection(a, body.data); break;
       case "policy": result = await saveAttendancePolicy(a, body.data); break;
       default: throw new Error("Unknown attendance action.");

@@ -790,9 +790,12 @@ export async function saveEnquiry(
   input: unknown,
   recordId?: string,
   version?: number,
+  logContact = false,
 ) {
   if (a.role === "operations") throw new Error("403: Not permitted.");
   const p = enquirySchema.parse(input);
+  if (logContact && (p.reviewNeeded || p.contactOutcome === "Not contacted"))
+    throw new Error("Choose Connected, No answer, or Call back to log a contact attempt.");
   if (p.reviewNeeded) owner(a);
   return transact(async (s) => {
     const c = await collection("enquiries");
@@ -886,6 +889,10 @@ export async function saveEnquiry(
       );
     }
     await syncFollowUp(a, e, s);
+    if (logContact) await (await collection("staffActivityEvents")).insertOne({
+      _id: `contact:${eid}:${e.version}`, org: a.org, version: 1, staffId: a.id, kind: "contact",
+      occurredAt: e.updatedAt, customerId: p.customerId, label: p.destination, outcome: p.contactOutcome,
+    }, { session: s });
     await audit(a, eid, previous ? "Enquiry updated" : "Enquiry created", s);
     return eid;
   });
@@ -977,10 +984,11 @@ export async function saveTask(
     )
       throw new Error("Linked records cannot be changed after task creation.");
     const tid = recordId || id();
+    const updatedAt = now();
     if (old) {
       const r = await c.updateOne(
         { _id: tid, version },
-        { $set: { ...p, updatedAt: now() }, $inc: { version: 1 } },
+        { $set: { ...p, updatedAt }, $inc: { version: 1 } },
         { session: s },
       );
       if (!r.matchedCount)
@@ -993,10 +1001,14 @@ export async function saveTask(
           version: 1,
           ...p,
           createdAt: now(),
-          updatedAt: now(),
+          updatedAt,
         },
         { session: s },
       );
+    if (p.status === "Done" && old?.status !== "Done") await (await collection("staffActivityEvents")).insertOne({
+      _id: `task-done:${tid}:${(old?.version ?? 0) + 1}`, org: a.org, version: 1, staffId: a.id,
+      kind: "task-done", occurredAt: updatedAt, label: p.title, customerId: p.customerId,
+    }, { session: s });
     await audit(
       a,
       p.enquiryId || tid,

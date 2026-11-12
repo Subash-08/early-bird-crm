@@ -4,7 +4,12 @@ Updated: 4 November 2026
 
 ## Current state
 
+**Team & setup → View activity** opens an Owner-only page for the selected team member, with date filters for due tasks, logged completions and contact attempts, driver assignments, and attendance. Sales and Operations have **My attendance** with the same period presets and their own totals. Historical calls and completions without a dated event are not inferred.
+
+The Owner attendance calendar now shows dated overviews and supports named office holidays. Staff can request off-site attendance with work location, hours, reason and an optional reference. Owner approval records off-site work as present without replacing original clock events; request notifications link back to Attendance.
+
 Attendance includes an editable office map with a live radius preview and a staff map with an on-demand location preview. The preview is held in the browser; attendance checks still use a fresh location and the server's saved policy.
+Attendance panels and forms adapt to narrow screens, with wide tables scrolling inside their own panels. The shared workspace loading skeleton now follows the mobile header and bottom navigation layout at phone widths.
 
 Enquiry and task usability fixes now keep the selected customer name visible, prefer the active Sales user for new Owner-captured enquiries, label assignment clearly, send an explicit enquiry field allowlist, mark conditional follow-up/task-note requirements and convert Zod validation failures into plain user messages. The implemented role workflow is documented in `docs/enquiry-to-trip-role-workflow.md` with a browser-viewable chart in `docs/enquiry-to-trip-role-workflow.html`.
 

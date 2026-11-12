@@ -178,7 +178,7 @@ export async function POST(req: Request) {
         result = await saveCustomer(a, body.data, body.id, body.version);
         break;
       case "enquiry":
-        result = await saveEnquiry(a, body.data, body.id, body.version);
+        result = await saveEnquiry(a, body.data, body.id, body.version, body.logContact === true);
         break;
       case "task":
         result = await saveTask(a, body.data, body.id, body.version);

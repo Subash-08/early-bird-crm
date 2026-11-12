@@ -5,6 +5,19 @@ export const attendanceStatuses = ["Present", "Late", "Checked in", "Missed chec
 
 const clock = /^([01]\d|2[0-3]):[0-5]\d$/;
 const iso = z.string().datetime({ offset: true });
+export const attendanceDateSchema = z.iso.date();
+export const attendanceHolidaySchema = z.object({
+  workDate: attendanceDateSchema,
+  name: z.string().trim().min(1, "Enter a holiday name.").max(100),
+}).strict();
+export const offsiteAttendanceSchema = z.object({
+  workDate: attendanceDateSchema,
+  start: z.string().regex(clock, "Enter the work start time."),
+  end: z.string().regex(clock, "Enter the work end time."),
+  place: z.string().trim().min(2, "Enter the work location.").max(160),
+  reason: z.string().trim().min(10, "Describe the company work in at least 10 characters.").max(1_000),
+  reference: z.string().trim().max(120).default(""),
+}).strict().refine((value) => value.start < value.end, { path: ["end"], message: "Work end must be after work start on the same day." });
 
 export const attendanceLocationSchema = z.object({
   latitude: z.number().finite().gte(-90).lte(90),
@@ -39,14 +52,14 @@ export const attendanceActionSchema = z.object({
 }).strict();
 
 export const attendanceCorrectionSchema = z.object({
-  workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose the attendance date."),
+  workDate: attendanceDateSchema,
   requestedCheckIn: z.union([z.literal(""), iso]).default(""),
   requestedCheckOut: z.union([z.literal(""), iso]).default(""),
   reason: z.string().trim().min(10, "Explain the correction in at least 10 characters.").max(1_000),
 }).strict().superRefine((value, context) => {
   if (!value.requestedCheckIn && !value.requestedCheckOut)
     context.addIssue({ code: "custom", path: ["requestedCheckIn"], message: "Enter a requested check-in or check-out time." });
-  if (value.requestedCheckIn && value.requestedCheckOut && value.requestedCheckOut <= value.requestedCheckIn)
+  if (value.requestedCheckIn && value.requestedCheckOut && Date.parse(value.requestedCheckOut) <= Date.parse(value.requestedCheckIn))
     context.addIssue({ code: "custom", path: ["requestedCheckOut"], message: "Requested check-out must be after check-in." });
 });
 

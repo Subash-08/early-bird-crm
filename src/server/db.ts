@@ -43,6 +43,7 @@ export async function indexes() {
       .createIndex({ org: 1, assigneeId: 1, status: 1, dueAt: 1 }),
     d.collection("tasks").createIndex({ org: 1, dueAt: 1 }),
     d.collection("tasks").createIndex({ org: 1, assigneeId: 1, dueAt: 1 }),
+    d.collection("staffActivityEvents").createIndex({ org: 1, staffId: 1, occurredAt: -1 }),
     d.collection("tasks").createIndex({ org: 1, customerId: 1, dueAt: -1 }),
     d.collection("enquiries").createIndex({ org: 1, assigneeId: 1, stage: 1 }),
     d.collection("enquiries").createIndex({ org: 1, createdAt: -1, source: 1, stage: 1 }),
