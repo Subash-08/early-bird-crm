@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AttendanceMap } from "./attendance-map";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -78,31 +79,43 @@ export function Attendance({ role, fail }: { role: "owner" | "sales" | "operatio
   const [date, setDate] = useState(dateInput());
   const [staffId, setStaffId] = useState("");
   const [notice, setNotice] = useState("");
+  const [fix, setFix] = useState<Awaited<ReturnType<typeof locationNow>> | null>(null);
+  const [locationMessage, setLocationMessage] = useState("");
   const load = useCallback(async () => {
     try { setLoading(true); setData(await request(undefined, undefined, date, staffId)); }
     catch (error) { fail(error instanceof Error ? error.message : "Could not load attendance."); }
     finally { setLoading(false); }
   }, [date, fail, staffId]);
   useEffect(() => { void load(); }, [load]);
-  const action = async (kind: "check-in" | "check-out") => {
+  const action = async (kind: "check-in" | "check-out" | "preview") => {
     try {
-      setBusy(kind); setNotice("Getting your current location…");
+      setBusy(kind); setNotice(""); setLocationMessage("Getting your current location…");
       const location = await locationNow();
+      setFix(location);
+      setLocationMessage("");
+      if (kind === "preview") return;
       setNotice("Verifying your location with the office…");
       await request(kind, { commandId: crypto.randomUUID(), location });
       setNotice(kind === "check-in" ? "Check-in recorded." : "Check-out recorded.");
       await load();
-    } catch (error) { setNotice(""); fail(error instanceof Error ? error.message : "Attendance could not be saved."); }
+    } catch (error) {
+      setNotice("");
+      setLocationMessage(error instanceof Error ? error.message : "Could not verify your location.");
+    }
     finally { setBusy(""); }
   };
   if (loading && !data) return <section className="panel route-loading"><LoaderCircle className="spin" /> Loading attendance…</section>;
   if (!data) return null;
   return role === "owner"
     ? <OwnerAttendance data={data} date={date} setDate={setDate} staffId={staffId} setStaffId={setStaffId} reload={load} busy={busy} setBusy={setBusy} fail={fail} />
-    : <StaffAttendance data={data} busy={busy} notice={notice} action={action} reload={load} fail={fail} />;
+    : <StaffAttendance data={data} busy={busy} notice={notice} action={action} reload={load} fail={fail} fix={fix} locationMessage={locationMessage} />;
 }
 
-function StaffAttendance({ data, busy, notice, action, reload, fail }: { data: Data; busy: string; notice: string; action: (kind: "check-in" | "check-out") => Promise<void>; reload: () => Promise<void>; fail: (message: string) => void }) {
+function StaffAttendance({ data, busy, notice, action, reload, fail, fix, locationMessage }: {
+  data: Data; busy: string; notice: string; action: (kind: "check-in" | "check-out" | "preview") => Promise<void>;
+  reload: () => Promise<void>; fail: (message: string) => void;
+  fix: Awaited<ReturnType<typeof locationNow>> | null; locationMessage: string;
+}) {
   const current = data.current;
   const status = current?.displayStatus || "Not checked in";
   const canCheckIn = !current?.checkInAt;
@@ -127,7 +140,7 @@ function StaffAttendance({ data, busy, notice, action, reload, fail }: { data: D
       <div>
         <p className="eyebrow">My attendance</p>
         <h2>{status}</h2>
-        <p>Location is checked only when you check in or check out. It is not continuous tracking.</p>
+        <p>Location is requested when you choose Show my location, Check in or Check out.</p>
       </div>
       <span className={`attendance-status ${String(status).toLowerCase().replaceAll(" ", "-")}`}><ShieldCheck /> {status}</span>
     </section>
@@ -141,7 +154,7 @@ function StaffAttendance({ data, busy, notice, action, reload, fail }: { data: D
           <button className="button primary" disabled={!canCheckIn || Boolean(busy)} onClick={() => void action("check-in")}><LogIn /> {busy === "check-in" ? "Checking in…" : "Check in"}</button>
           <button className="button secondary" disabled={!canCheckOut || Boolean(busy)} onClick={() => void action("check-out")}><LogOut /> {busy === "check-out" ? "Checking out…" : "Check out"}</button>
         </div>
-        {notice && <p className="attendance-notice"><LoaderCircle className={busy ? "spin" : ""} /> {notice}</p>}
+        {(notice || locationMessage) && <p className="attendance-notice" role="status">{busy && <LoaderCircle className="spin" />} {notice || locationMessage}</p>}
       </section>
       <section className="panel attendance-timeline">
         <h3>Today</h3>
@@ -150,6 +163,14 @@ function StaffAttendance({ data, busy, notice, action, reload, fail }: { data: D
         <div><span><Clock3 /></span><p><b>Working time</b><small>{current?.checkOutAt ? duration(current.totalWorkingMinutes) : "Calculated after check-out"}</small></p></div>
       </section>
     </div>
+    <section className="panel attendance-settings">
+      <div className="panel-head"><div><h3><MapPin /> Office and your location</h3><p>Preview your location without recording attendance. Check-in and check-out each request a fresh reading.</p></div>
+        <button type="button" className="button secondary" disabled={Boolean(busy)} onClick={() => void action("preview")}><MapPin /> {busy === "preview" ? "Finding location…" : fix ? "Refresh my location" : "Show my location"}</button>
+      </div>
+      <AttendanceMap office={data.policy} radiusM={data.policy.radiusM} fix={fix} accuracyLimit={data.policy.maximumAccuracyM} />
+      {fix && <p className="attendance-notice">Last reading: {dateTime(fix.capturedAt)}</p>}
+      {locationMessage && <p className="attendance-notice">{locationMessage}</p>}
+    </section>
     <section className="panel attendance-history"><div className="panel-head"><div><h3>Recent attendance</h3><p>Your last 31 attendance records.</p></div></div><AttendanceHistory rows={data.history || []} /></section>
     <section className="panel attendance-correction"><div className="panel-head"><div><h3><FilePenLine /> Request a correction</h3><p>Use this if location, internet, or a missed check-out caused a genuine issue.</p></div></div>
       <form onSubmit={submitCorrection} className="attendance-correction-form">
@@ -200,7 +221,9 @@ function OwnerAttendance({ data, date, setDate, staffId, setStaffId, reload, bus
       <div className="responsive-table"><table><thead><tr><th>Staff</th><th>Role</th><th>Status</th><th>Check in</th><th>Check out</th><th>Working time</th></tr></thead><tbody>{(data.attendance || []).map((row) => <tr key={row.staffId}><td><b>{row.name}</b></td><td>{row.role === "sales" ? "Sales" : "Operations"}</td><td><span className={`attendance-status small ${String(row.displayStatus).toLowerCase().replaceAll(" ", "-")}`}>{row.displayStatus}</span></td><td>{dateTime(row.checkInAt)}</td><td>{dateTime(row.checkOutAt)}</td><td>{duration(row.totalWorkingMinutes)}</td></tr>)}{!(data.attendance || []).length && <tr><td colSpan={6}>No active Sales or Operations staff match this filter.</td></tr>}</tbody></table></div>
     </section>
     <section className="panel attendance-exception-queue"><div className="panel-head"><div><h3>Correction requests</h3><p>Original attendance events remain unchanged. Your decision is recorded separately.</p></div></div>{data.exceptions.length ? data.exceptions.map((item) => <article key={item._id}><div><b>{item.workDate} · {item.staffName}</b><p>{item.reason}</p><small>Requested: {dateTime(item.requestedCheckIn)} → {dateTime(item.requestedCheckOut)}</small></div><div><button className="button secondary" disabled={busy === item._id} onClick={() => void decide(item._id, "Rejected")}>Reject</button><button className="button primary" disabled={busy === item._id} onClick={() => void decide(item._id, "Approved")}>Approve</button></div></article>) : <p className="attendance-empty">No correction requests need review.</p>}</section>
-    <section className="panel attendance-settings"><div className="panel-head"><div><h3><MapPin /> Office attendance rules</h3><p>Initial office coordinates came from the location you provided. Adjust them only after verifying the pin.</p></div></div><form onSubmit={savePolicy} className="attendance-settings-form">
+    <section className="panel attendance-settings"><div className="panel-head"><div><h3><MapPin /> Office attendance rules</h3><p>Click or tap the office entrance to place the pin. Change the radius below to preview the boundary, then save your rules.</p></div></div>
+      <AttendanceMap office={policy} radiusM={policy.radiusM} onPick={(point) => setPolicy((current) => ({ ...current, latitude: Number(point.latitude.toFixed(7)), longitude: Number(point.longitude.toFixed(7)) }))} />
+      <form onSubmit={savePolicy} className="attendance-settings-form">
       <label>Office name<input value={policy.officeName} onChange={(event) => setPolicy({ ...policy, officeName: event.target.value })} required /></label>
       <label>Latitude<input type="number" step="any" value={policy.latitude} onChange={(event) => setPolicy({ ...policy, latitude: Number(event.target.value) })} required /></label>
       <label>Longitude<input type="number" step="any" value={policy.longitude} onChange={(event) => setPolicy({ ...policy, longitude: Number(event.target.value) })} required /></label>

@@ -7,7 +7,7 @@ Attendance is a small, office-based extension of EarlyBird Travel CRM. It is not
 - The Owner monitors attendance, configures the office rule, exports a daily CSV, and reviews correction requests.
 - Active Sales and Operations staff check in and check out for themselves.
 - The Owner never checks in or out.
-- Location is requested only after a deliberate check-in or check-out action. The application does not watch staff locations in the background.
+- Location is requested only after staff choose **Show my location**, **Check in**, or **Check out**. The application does not watch staff locations in the background.
 
 ## Initial configuration
 
@@ -20,6 +20,10 @@ The initial office pin is the location supplied by the Owner:
 - Default schedule: Monday–Saturday, 09:30–18:30, 10-minute grace period
 
 The Owner must verify the pin and schedule on **Attendance** before real staff use it. The values are editable in the application.
+
+Under **Office attendance rules**, pan or zoom the map and click or tap the office entrance. Changing **Office radius (m)** immediately redraws the boundary; **Save attendance rules** applies the pin and radius. The latitude and longitude fields are also editable.
+
+Sales and Operations can use **Show my location** to preview their own reported position, accuracy and distance alongside the office boundary. This preview does not send an attendance request or save the location. A wide-area preview uses a simple diagram to avoid requesting map tiles near the employee's location. Street tiles come from OpenStreetMap and require internet access; the office outline and position markers remain visible without them.
 
 ## How it works
 
@@ -48,8 +52,8 @@ The Owner must verify the pin and schedule on **Attendance** before real staff u
 
 ## Manual test before using real data
 
-1. As Owner, open **Attendance** and confirm the office pin, working days, start/end time, grace period, radius, and accuracy limit.
-2. As Sales, allow browser location permission near the office and check in. Confirm Owner sees the person and time.
+1. As Owner, open **Attendance** and select the office entrance on the map. Change the radius and confirm the circle updates immediately. Save and reload to confirm the pin and radius persist. Verify the working days, start/end time, grace period and accuracy limit.
+2. As Sales, select **Show my location** and allow browser location permission near the office. Confirm both dots and the boundary are visible and the preview creates no attendance record. Then check in and confirm the Owner sees the person and time.
 3. Check out near the office. Confirm duration is shown.
 4. Try another check-in on the same date. It must be rejected.
 5. Deny location permission. Confirm no attendance is created and the user sees a clear message.

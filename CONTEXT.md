@@ -4,6 +4,8 @@ Updated: 4 November 2026
 
 ## Current state
 
+Attendance includes an editable office map with a live radius preview and a staff map with an on-demand location preview. The preview is held in the browser; attendance checks still use a fresh location and the server's saved policy.
+
 Enquiry and task usability fixes now keep the selected customer name visible, prefer the active Sales user for new Owner-captured enquiries, label assignment clearly, send an explicit enquiry field allowlist, mark conditional follow-up/task-note requirements and convert Zod validation failures into plain user messages. The implemented role workflow is documented in `docs/enquiry-to-trip-role-workflow.md` with a browser-viewable chart in `docs/enquiry-to-trip-role-workflow.html`.
 
 The complete local workflow covers enquiry, quotation, booking, verified advance, supplier/vehicle coordination, driver assignments, My trips, readiness/private documents, operational PDFs, incidents, collection/custody, gated trip completion, settlement, Owner-managed role transitions, filtered reports and CSV/XLSX exports. The responsive shell now includes fixed independently scrolling navigation and a privacy-safe installable PWA/offline fallback.
