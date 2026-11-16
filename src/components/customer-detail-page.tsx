@@ -15,7 +15,6 @@ type Detail = {
   invoices: Row[];
 };
 const when = (value?: string) => value ? new Date(value).toLocaleDateString("en-IN", { dateStyle: "medium" }) : "Not available";
-const money = (minor = 0, currency = "INR") => new Intl.NumberFormat("en-IN", { style: "currency", currency }).format(minor / 100);
 
 export function CustomerDetailPage({ id, embedded = false, back }: { id: string; embedded?: boolean; back?: () => void }) {
   const [data, setData] = useState<Detail | null>(null);
@@ -44,7 +43,10 @@ export function CustomerDetailPage({ id, embedded = false, back }: { id: string;
         <DetailList title="Quotations" icon={<FileSpreadsheet />} rows={data.quotes} empty="No quotations yet." render={(row) => <><b>{row.quoteNumber}</b><span>{row.status}</span><small>{row.content?.title || "Quotation"}</small></>} />
         <DetailList title="Bookings" icon={<ClipboardCheck />} rows={data.bookings} empty="No bookings yet." render={(row) => <><b>{row.bookingNumber}</b><span>{row.status}</span><small>{row.destination || "Destination pending"} · {when(row.serviceStart)}</small></>} />
         <DetailList title="Tasks" icon={<CheckSquare />} rows={data.tasks} empty="No linked tasks." render={(row) => <><b>{row.title}</b><span>{row.status}</span><small>Due {when(row.dueAt)}</small></>} />
-        <section className="panel detail-section"><h2><ReceiptText /> Invoices</h2>{data.invoices.map((row) => <a key={row._id} href={`/api/documents/finance/${row.documentId}`} target="_blank" rel="noreferrer"><b>{row.invoiceNumber || "Draft invoice"}</b><span>{row.status}</span><small>{money(row.totalMinor || row.amountMinor, row.currency || row.snapshot?.currency)}</small></a>)}{!data.invoices.length && <p>No invoices yet.</p>}</section>
+        <section className="panel detail-section"><h2><ReceiptText /> Invoices</h2>{data.invoices.map((row) => row.documentId
+          ? <a key={row._id} href={`/api/documents/finance/${row.documentId}`} download><b>{row.invoiceNumber || "Invoice"}</b><span>{row.status}</span><small>Download invoice</small></a>
+          : <article key={row._id}><b>Invoice draft</b><span>{row.status}</span><small>The Owner can issue it from Bookings.</small></article>
+        )}{!data.invoices.length && <p>No invoices yet.</p>}</section>
       </div>
     </>;
   return embedded ? <div className="customer-detail-embedded">{content}</div> : <main className="detail-page">{content}</main>;

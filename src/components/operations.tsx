@@ -112,10 +112,9 @@ export function Operations({
       <div className="operations-hero">
         <div>
           <p className="eyebrow">Trip operations</p>
-          <h2>Confirm each service. Assign one clear trip at a time.</h2>
+          <h2>Services and trip progress</h2>
           <p>
-            Supplier confirmation, customer payment and trip completion remain
-            separate, so the team never promises work that is still pending.
+            Confirm suppliers, schedule transport and record progress for bookings ready for coordination.
           </p>
         </div>
         <span className="booking-lock">
@@ -197,7 +196,7 @@ export function Operations({
             <Empty
               icon={Route}
               title="No released bookings"
-              text="Phase 3 releases will appear here."
+              text="Start the service checklist from an accepted booking to see it here."
             />
           )}
         </section>
@@ -683,13 +682,17 @@ function BookingOperations({ s, booking, busy, run, close }: any) {
           </div>
         )}
         {section === "services" && (
-          <ArrangementSection
+          <><div className="banner action-banner">
+            <span>Reuse stays and transport from the accepted package as draft services.</span>
+            <button className="button secondary" disabled={busy || ["Cancelled", "Trip completed"].includes(booking.status)}
+              onClick={() => run("operations-copy-package", { bookingId: booking._id })}>Copy package services</button>
+          </div><ArrangementSection
             s={s}
             booking={booking}
             rows={arrangements}
             busy={busy}
             run={run}
-          />
+          /></>
         )}
         {section === "trips" && (
           <TripSection
@@ -724,7 +727,7 @@ function BookingOperations({ s, booking, busy, run, close }: any) {
             <b>Finish the trip</b>
             <p>
               Available only after services, trip segments, readiness and
-              incidents are complete. Settlement stays open for Phase 5.
+              incidents are resolved.
             </p>
           </div>
           <button
@@ -962,7 +965,7 @@ function ArrangementSection({ s, booking, rows, busy, run }: any) {
             />
           </Field>
         )}
-        {form.responsibility === "Agency arranged" && (
+        {form.responsibility === "Agency arranged" && booking.paymentTracking !== false && (
           <div className="form-grid three">
             <Field label="Supplier cost">
               <input
@@ -1024,9 +1027,11 @@ function ArrangementSection({ s, booking, rows, busy, run }: any) {
 }
 
 function TripSection({ s, booking, rows, staff, busy, run }: any) {
+  const direct = booking.operationsCoordinationMode === "direct";
   const blank = {
     bookingId: booking._id,
     mode: "Car",
+    carHandling: direct ? "external" : "internal",
     title: "",
     from: "",
     to: "",
@@ -1042,13 +1047,17 @@ function TripSection({ s, booking, rows, staff, busy, run }: any) {
   };
   const [editing, setEditing] = useState<Row | null>(null);
   const [form, setForm] = useState<any>(blank);
+  const [progress, setProgress] = useState({ status: "", note: "" });
+  const externalCar = form.mode === "Car" && form.carHandling === "external";
   const edit = (row?: Row) => {
     setEditing(row || null);
+    setProgress({ status: "", note: row?.progressNote || "" });
     setForm(
       row
         ? {
             bookingId: booking._id,
             mode: row.mode,
+            carHandling: row.carHandling || (direct ? "external" : "internal"),
             title: row.title,
             from: row.from || "",
             to: row.to || "",
@@ -1070,7 +1079,7 @@ function TripSection({ s, booking, rows, staff, busy, run }: any) {
       <div className="section-title">
         <div>
           <h3>Trip assignments</h3>
-          <p>Overlapping driver or vehicle times are blocked automatically.</p>
+          <p>{direct ? "Plan supplier or customer transport and record its progress here." : "Overlapping driver or vehicle times are blocked automatically."}</p>
         </div>
         <button className="button secondary" onClick={() => edit()}>
           <Plus /> Add trip
@@ -1186,7 +1195,17 @@ function TripSection({ s, booking, rows, staff, busy, run }: any) {
             />
           </Field>
         </div>
-        {form.mode === "Car" && (
+        {form.mode === "Car" && !direct && (
+          <Field label="Car provided by">
+            <select value={form.carHandling} onChange={(event) =>
+              setForm({ ...form, carHandling: event.target.value, driverId: "", vehicleId: "", arrangementId: "" })
+            }>
+              <option value="internal">Our driver and vehicle</option>
+              <option value="external">Supplier or customer</option>
+            </select>
+          </Field>
+        )}
+        {form.mode === "Car" && form.carHandling === "internal" && (
           <div className="form-grid two">
             <Field label="Driver">
               <select
@@ -1220,16 +1239,19 @@ function TripSection({ s, booking, rows, staff, busy, run }: any) {
             </Field>
           </div>
         )}
-        <Field label="Linked service">
+        <Field label={externalCar ? "Car service (required)" : "Linked service"}>
           <select
             value={form.arrangementId}
+            required={externalCar}
             onChange={(e) =>
               setForm({ ...form, arrangementId: e.target.value })
             }
           >
-            <option value="">No linked service</option>
+            <option value="">{externalCar ? "Choose a car service" : "No linked service"}</option>
             {s.arrangements
-              .filter((x: Row) => x.bookingId === booking._id)
+              .filter((x: Row) => x.bookingId === booking._id &&
+                (!externalCar ||
+                  (x.type === "Car" && !["Unavailable", "Cancelled"].includes(x.confirmationStatus))))
               .map((x: Row) => (
                 <option value={x._id} key={x._id}>
                   {x.title}
@@ -1237,6 +1259,9 @@ function TripSection({ s, booking, rows, staff, busy, run }: any) {
               ))}
           </select>
         </Field>
+        {externalCar && (
+          <p>Add a car under Services first if it is missing from this list.</p>
+        )}
         <Field label="Pickup contact / sign">
           <input
             value={form.pickupContact}
@@ -1275,6 +1300,41 @@ function TripSection({ s, booking, rows, staff, busy, run }: any) {
           <Check /> Save trip assignment
         </button>
       </div>
+      {editing && !editing.driverId && !["Completed", "Cancelled"].includes(editing.status) && (
+        <div className="subform">
+          <h4>Update trip progress</h4>
+          <Field label="Status">
+            <select value={progress.status} onChange={(event) => setProgress({ ...progress, status: event.target.value })}>
+              <option value="">Choose status</option>
+              {["Started", "Picked up", "Completed", "Unable to complete"]
+                .slice(editing.status === "Picked up" ? 2 : editing.status === "Started" ? 1 : 0)
+                .filter((status) => status !== editing.status)
+                .map((status) => <option key={status}>{status}</option>)}
+            </select>
+          </Field>
+          <Field label={progress.status === "Unable to complete" ? "Reason (required)" : "Note (optional)"}>
+            <textarea value={progress.note} onChange={(event) => setProgress({ ...progress, note: event.target.value })} />
+          </Field>
+          <button
+            className="button secondary wide"
+            disabled={busy || !progress.status || (progress.status === "Unable to complete" && !progress.note.trim())}
+            onClick={async () => {
+              if (await run("trip-progress", {
+                segmentId: editing._id,
+                version: editing.version,
+                status: progress.status,
+                note: progress.note,
+                actualStart: editing.actualStart || "",
+                actualEnd: editing.actualEnd || "",
+                startOdometer: editing.startOdometer ?? null,
+                endOdometer: editing.endOdometer ?? null,
+              })) edit();
+            }}
+          >
+            <Check /> Save progress
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1952,7 +2012,7 @@ function MyTrips({ s, q, busy, run }: any) {
             <AlertTriangle /> Send incident report
           </button>
         </section>
-        <section className="panel compact-form">
+        {s.bookings.some((b: Row) => b.paymentTracking !== false) && <section className="panel compact-form">
           <div className="section-title">
             <div>
               <h3>Exceptional cash collection</h3>
@@ -1974,7 +2034,7 @@ function MyTrips({ s, q, busy, run }: any) {
               }}
             >
               <option value="">Choose booking</option>
-              {s.bookings.map((x: Row) => (
+              {s.bookings.filter((b: Row) => b.paymentTracking !== false).map((x: Row) => (
                 <option key={x._id} value={x._id}>
                   {x.bookingNumber}
                 </option>
@@ -2045,11 +2105,11 @@ function MyTrips({ s, q, busy, run }: any) {
             Reporting cash does not verify payment. Cash handover is tracked
             separately and never adds a second customer payment.
           </p>
-        </section>
+        </section>}
         <section className="panel compact-form">
           <div className="section-title">
             <div>
-              <h3>Request a change or expense</h3>
+              <h3>Request a trip change</h3>
               <p>
                 This never changes a route or financial total until reviewed.
               </p>
@@ -2068,6 +2128,8 @@ function MyTrips({ s, q, busy, run }: any) {
                   segmentId: e.target.value,
                   bookingId: segment?.bookingId || "",
                   currency: booking?.currency || "INR",
+                  type: booking?.paymentTracking === false ? "Logistics change" : request.type,
+                  amount: booking?.paymentTracking === false ? "0" : request.amount,
                 });
               }}
             >
@@ -2091,7 +2153,7 @@ function MyTrips({ s, q, busy, run }: any) {
               }
             >
               <option>Logistics change</option>
-              <option>Expense</option>
+              {s.bookings.some((b: Row) => b._id === request.bookingId && b.paymentTracking !== false) && <option>Expense</option>}
             </select>
           </Field>
           <Field label="Details">

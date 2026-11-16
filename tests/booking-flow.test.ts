@@ -354,4 +354,49 @@ describe("Phase 3 booking and verified advance", () => {
       ).countDocuments({ bookingId }),
     ).toBe(3);
   }, 120000);
+
+  it("coordinates customer transport without a driver and preserves access and completion gates", async () => {
+    const bookingId = "booking-direct";
+    const bookings = await dbmod.collection("bookings");
+    await bookings.insertOne({
+      _id: bookingId, org: owner.org, version: 1, bookingNumber: "EB-B-DIRECT", quoteId: "quote-direct",
+      salesAssigneeId: sales.id, status: "Ready for operations release", operationsReleased: false,
+      requiredAdvanceMinor: 10000, verifiedPaidMinor: 10000,
+      agreementSnapshot: { content: { services: [] } },
+    });
+    const release = { bookingId, version: 1, coordinationMode: "direct", operationsAssigneeIds: [] };
+    await expect(bookingApi.releaseOperations(sales, release)).rejects.toThrow("Owner");
+    await expect(bookingApi.releaseOperations(owner, release)).rejects.toThrow("Issue the customer invoice");
+    await (await dbmod.collection("invoices")).insertOne({
+      _id: "invoice-direct", org: owner.org, bookingId, invoiceVersion: 1, status: "Issued",
+    });
+    await bookingApi.releaseOperations(owner, release);
+    await bookingApi.releaseOperations(owner, release);
+    const booked = await bookings.findOne({ _id: bookingId });
+    expect(booked.operationsAssigneeIds).toEqual([]);
+    expect(booked.operationsCoordinationMode).toBe("direct");
+    expect(await (await dbmod.collection("tasks")).countDocuments({ bookingId, assigneeId: sales.id })).toBe(1);
+    expect((await crm.snapshot(operations, "operations")).bookings.map((b: any) => b._id)).not.toContain(bookingId);
+
+    const operationsApi = await import("../src/server/operations");
+    const transport = {
+      bookingId, mode: "Car", carHandling: "external", title: "Customer airport pickup",
+      startAt: "2027-02-10T04:00:00.000Z", endAt: "2027-02-10T06:00:00.000Z",
+    };
+    await expect(operationsApi.saveTripSegment(sales, { data: transport })).rejects.toThrow("Link a car service");
+    const arrangements = await dbmod.collection("arrangements");
+    await arrangements.insertOne({
+      _id: "customer-car", org: owner.org, bookingId, type: "Car",
+      responsibility: "Customer booked", confirmationStatus: "Unavailable",
+    });
+    const tripInput = { data: { ...transport, arrangementId: "customer-car" } };
+    await expect(operationsApi.saveTripSegment(sales, tripInput)).rejects.toThrow("Link an available car service");
+    await arrangements.updateOne({ _id: "customer-car" }, { $set: { confirmationStatus: "Confirmed" } });
+    const segmentId = await operationsApi.saveTripSegment(sales, tripInput);
+    await expect(operationsApi.completeTrip(owner, { bookingId, version: booked.version })).rejects.toThrow("Complete every active trip segment");
+    await expect(operationsApi.updateTripProgress(operations, { segmentId, version: 1, status: "Completed" })).rejects.toThrow("403");
+    await operationsApi.updateTripProgress(sales, { segmentId, version: 1, status: "Completed" });
+    await operationsApi.completeTrip(owner, { bookingId, version: booked.version });
+    expect((await bookings.findOne({ _id: bookingId })).status).toBe("Trip completed");
+  }, 30000);
 });

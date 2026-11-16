@@ -106,19 +106,35 @@ function cellText(
   align: "left" | "center" | "right" = "left",
   maxLines = 5,
 ) {
+  const textWidth = width - 8;
   const words = String(value ?? "").replace(/\s+/g, " ").trim().split(" ");
+  if (align === "right" && maxLines === 1 && words.length === 1 && words[0]) {
+    const fittedSize = Math.min(size, size * textWidth / font.widthOfTextAtSize(words[0], size));
+    page.drawText(words[0], { x: x + width - 4 - font.widthOfTextAtSize(words[0], fittedSize), y, size: fittedSize, font, color: BLACK });
+    return;
+  }
   const lines: string[] = [];
   let line = "";
   for (const word of words) {
     const next = line ? `${line} ${word}` : word;
-    if (font.widthOfTextAtSize(next, size) > width - 8 && line) {
-      lines.push(line);
-      line = word;
-    } else line = next;
+    if (font.widthOfTextAtSize(next, size) <= textWidth) { line = next; continue; }
+    if (line) lines.push(line);
+    line = "";
+    for (const character of word) {
+      if (line && font.widthOfTextAtSize(line + character, size) > textWidth) {
+        lines.push(line);
+        line = "";
+      }
+      line += character;
+    }
   }
   if (line) lines.push(line);
   for (const [index, raw] of lines.slice(0, maxLines).entries()) {
-    const valueLine = index === maxLines - 1 && lines.length > maxLines ? `${raw.slice(0, -3)}...` : raw;
+    let valueLine = raw;
+    if (index === maxLines - 1 && lines.length > maxLines) {
+      while (valueLine && font.widthOfTextAtSize(valueLine + "...", size) > textWidth) valueLine = valueLine.slice(0, -1);
+      valueLine += "...";
+    }
     const measured = font.widthOfTextAtSize(valueLine, size);
     const tx = align === "right" ? x + width - measured - 4 : align === "center" ? x + (width - measured) / 2 : x + 4;
     page.drawText(valueLine, { x: tx, y: y - index * (size + 2), size, font, color: BLACK });
@@ -135,7 +151,32 @@ async function dataImage(doc: PDFDocument, value: string) {
   return value.startsWith("data:image/png") ? doc.embedPng(bytes) : doc.embedJpg(bytes);
 }
 
-async function buildTaxInvoicePdf(snapshot: any) {
+export async function embedBusinessLogo(doc: PDFDocument, configured = "") {
+  if (configured) {
+    try { return await dataImage(doc, configured); }
+    catch { /* Use the bundled agency logo when the configured file cannot be read. */ }
+  }
+  return doc.embedPng(await readFile(path.join(process.cwd(), "public", "earlybird-vacations-logo.png")));
+}
+
+export function invoicePrintSnapshot(snapshot: any, agreement: any, copies?: string[]) {
+  const title = String(agreement?.content?.title || "").trim();
+  const optionName = String(agreement?.selectedOption?.name || "").trim();
+  const oldAutoDescription = title && optionName ? `${optionName} - ${title}` : "";
+  return {
+    ...snapshot,
+    copyLabels: copies || [snapshot.copyLabels?.[0] || "Customer copy"],
+    lines: (snapshot.lines || []).map((line: any) =>
+      line.kind === "Charge" && oldAutoDescription && line.description === oldAutoDescription
+        ? { ...line, description: title } : line),
+    travelSummary: snapshot.travelSummary && {
+      ...snapshot.travelSummary,
+      selectedOptionName: title || snapshot.travelSummary.selectedOptionName,
+    },
+  };
+}
+
+async function buildRuledFinancialPdf(snapshot: any) {
   const doc = await PDFDocument.create();
   doc.registerFontkit(fontkit);
   const font = await doc.embedFont(
@@ -144,131 +185,151 @@ async function buildTaxInvoicePdf(snapshot: any) {
   );
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const template = snapshot.template || {};
-  const logo = await dataImage(doc, template.logoDataUrl || "");
-  const signature = await dataImage(doc, template.signatureDataUrl || "");
-  const copyLabels = (snapshot.copyLabels?.length ? snapshot.copyLabels : ["Customer copy"]).slice(0, 6);
-  const lineChunks: any[][] = [];
+  const quote = snapshot.kind === "Quotation";
+  const logo = await embedBusinessLogo(doc, template.logoDataUrl);
+  const signature = quote ? null : await dataImage(doc, template.signatureDataUrl || "");
+  const serif = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const copyLabels = quote ? [""] : (snapshot.copyLabels?.length ? snapshot.copyLabels : ["Customer copy"]).slice(0, 6);
   const allLines = snapshot.lines || [];
+  const lineChunks: any[][] = [];
   for (let index = 0; index < allLines.length; index += 10) lineChunks.push(allLines.slice(index, index + 10));
   if (!lineChunks.length) lineChunks.push([]);
 
+  const height = 792;
+  const left = 63, right = 492, split = 310, taxSplit = 423;
+  const grid = quote ? [left, 103, 237, right] : [left, 103, 152, split, 351, 391, taxSplit, right];
   for (const copyLabel of copyLabels) {
-    for (let chunkIndex = 0; chunkIndex < lineChunks.length; chunkIndex++) {
-      const page = doc.addPage([612, 792]);
-      const x = 28, right = 584, width = right - x;
-      const last = chunkIndex === lineChunks.length - 1;
-      box(page, x, 35, width, 730, 1.2);
-      box(page, x, 738, width, 27);
-      cellText(page, bold, template.documentTitle || "TAX INVOICE", x, 755, width, 15, "center", 1);
-      cellText(page, font, `${copyLabel}${lineChunks.length > 1 ? ` · Page ${chunkIndex + 1}/${lineChunks.length}` : ""}`, x, 739, width - 6, 6.6, "right", 1);
+    for (let pageIndex = 0; pageIndex < lineChunks.length; pageIndex++) {
+      const page = doc.addPage([612, height]);
+      const last = pageIndex === lineChunks.length - 1;
+      const horizontal = (top: number, from = left, to = right, thickness = 0.7) =>
+        page.drawLine({ start: { x: from, y: height - top }, end: { x: to, y: height - top }, thickness, color: BLACK });
+      const vertical = (x: number, from: number, to: number) =>
+        page.drawLine({ start: { x, y: height - from }, end: { x, y: height - to }, thickness: 0.7, color: BLACK });
+      const cell = (value: unknown, x1: number, x2: number, top: number, size = 8.5, align: "left" | "center" | "right" = "left", lines = 1, face = font) =>
+        cellText(page, face, value, x1, height - top - size, x2 - x1, size, align, lines);
+      const picture = (img: NonNullable<typeof logo>, x1: number, x2: number, top: number, bottom: number) => {
+        const scaled = img.scale(Math.min((x2 - x1 - 8) / img.width, (bottom - top - 4) / img.height));
+        page.drawImage(img, { x: (x1 + x2 - scaled.width) / 2, y: height - (top + bottom + scaled.height) / 2, ...scaled });
+      };
 
-      box(page, x, 650, 150, 88);
-      box(page, x + 150, 650, width - 150, 88);
-      if (logo) {
-        const scaled = logo.scale(Math.min(1, 120 / logo.width, 62 / logo.height));
-        page.drawImage(logo, { x: x + (150 - scaled.width) / 2, y: 663, width: scaled.width, height: scaled.height });
-      } else cellText(page, font, "EARLY BIRD\nVACATIONS", x, 705, 150, 12, "center", 2);
-      cellText(page, font, template.legalName || "Early Bird Vacations", x + 150, 726, width - 150, 11, "center", 1);
-      cellText(page, font, template.address || "", x + 158, 709, width - 166, 7.3, "center", 4);
-      cellText(page, font, [template.phone, template.email].filter(Boolean).join(" · "), x + 158, 665, width - 166, 7, "center", 2);
+      box(page, left, height - 778, right - left, 763, 1.45);
+      for (const top of [32, 129, 142, 155, 219, 232, 591, 719]) horizontal(top, left, right, [32, 129, 219, 591, 719].includes(top) ? 1.15 : 0.7);
+      vertical(split, 32, 109);
+      vertical(split, 129, 219);
+      vertical(152, 129, 142);
+      vertical(split, 591, 778);
+      for (const top of [45, 82, 95, 109]) horizontal(top, split, right);
+      horizontal(109, left, split, 1.15);
+      horizontal(167, split, right);
 
-      box(page, x, 628, width, 22);
-      cellText(page, font, `GSTIN: ${template.gstin || "Not configured"}${template.pan ? `  ·  PAN: ${template.pan}` : ""}${template.stateName ? `  ·  ${template.stateName} (${template.stateCode || "-"})` : ""}`, x, 643, width, 8.2, "center", 1);
-      const half = width / 2;
-      box(page, x, 598, half, 30);
-      box(page, x + half, 598, half, 30);
-      cellText(page, font, `Invoice No: ${snapshot.number}`, x, 618, half, 8.2, "left", 1);
-      cellText(page, font, `Date: ${safeDate(snapshot.issuedAt)}`, x + half, 618, half, 8.2, "left", 1);
-      cellText(page, font, `Booking: ${snapshot.bookingNumber || ""}`, x, 604, half, 7, "left", 1);
-      cellText(page, font, `Due: ${safeDate(snapshot.dueDate) || "As agreed"}`, x + half, 604, half, 7, "left", 1);
+      cell(quote ? "QUOTATION" : template.documentTitle || "TAX INVOICE", left, right, 16, 12.6, "center", 1, serif);
+      if (logo) picture(logo, left + 3, split - 3, 33, 108);
+      cell(template.legalName || "Early Bird Vacations", split, right, 33, 9, "left", 1, font);
+      cell(template.address, split, right, 46, 8, "center", 3);
+      if (template.phone) cell(`Mobile: ${template.phone}`, split, right, 82.5, 8);
+      if (template.email) cell(`Email: ${template.email}`, split, right, 95.5, 8);
+      if (template.gstin) cell(`GSTIN: ${template.gstin}`, split, right, 110, 12, "center", 1, bold);
+      if (!quote && template.pan) cell(`PAN: ${template.pan}`, left, split, 114, 8.5);
 
-      box(page, x, 508, half, 90);
-      box(page, x + half, 508, half, 90);
-      cellText(page, bold, "BUYER / BILL TO", x, 589, half, 7.6, "left", 1);
-      cellText(page, font, snapshot.payer?.name || "Customer", x, 575, half, 9.2, "left", 1);
-      cellText(page, font, snapshot.payer?.billingAddress || "", x, 558, half, 7.2, "left", 4);
-      if (template.showBuyerGstin) cellText(page, font, `GSTIN: ${snapshot.payer?.taxId || "Not provided"}`, x, 518, half, 7, "left", 1);
-      cellText(page, bold, "SERVICE / DELIVERY DETAILS", x + half, 589, half, 7.6, "left", 1);
-      if (template.showDeliveryAddress) cellText(page, font, snapshot.payer?.deliveryAddress || snapshot.payer?.billingAddress || "Same as billing address", x + half, 575, half, 7.2, "left", 4);
-      cellText(page, font, `Place of supply: ${snapshot.placeOfSupply || "Not applicable"}`, x + half, 532, half, 7, "left", 1);
-      cellText(page, font, `State code: ${snapshot.buyerStateCode || "-"}`, x + half, 518, half, 7, "left", 1);
+      cell(`Date: ${safeDate(snapshot.issuedAt)}`, left, 152, 129.5, 8);
+      cell(`${quote ? "Quote" : "Invoice"} No: ${snapshot.number}`, 152, split, 129.5, 8);
+      const metadata = quote ? `Version ${snapshot.quoteVersion} · Valid until ${safeDate(snapshot.dueDate) || "As agreed"}`
+        : [snapshot.bookingNumber, safeDate(snapshot.dueDate) && `Due ${safeDate(snapshot.dueDate)}`].filter(Boolean).join(" · ");
+      cell(metadata, split, right, 130, 7.25);
+      cell(quote ? "Prepared for" : "Name & Address of Buyer", left, split, 142.5, 8.5, "left", 1, bold);
+      cell(snapshot.payer?.name || "Customer", left, split, 155.5, 9.1, "left", 1);
+      if (quote) {
+        cell([snapshot.payer?.phone, snapshot.payer?.email].filter(Boolean).join(" · "), left, split, 169, 8, "left", 3);
+        cell("Trip details:", split, right, 154.5, 8.5, "left", 1, bold);
+        cell(snapshot.trip.title, split, right, 169, 8.5, "left", 2);
+        cell(snapshot.trip.destination, split, right, 192, 8, "left", 1);
+        cell(snapshot.trip.dates || "Dates to be confirmed", split, right, 205, 7.6, "left", 1);
+      } else {
+        cell(snapshot.payer?.billingAddress, left, split, 168, 8.1, "left", 3);
+        if (snapshot.payer?.phone) cell(`Phone: ${snapshot.payer.phone}`, left, split, 200, 7.6);
+        if (template.showBuyerGstin && snapshot.payer?.taxId) cell(`GSTIN: ${snapshot.payer.taxId}`, left, split, 209, 7.8);
+        if (template.showDeliveryAddress) {
+          cell("Delivery address:", split, right, 154.5, 8.5, "left", 1, bold);
+          cell(snapshot.payer?.deliveryAddress || snapshot.payer?.billingAddress || "Same as billing address", split, right, 172, 8.1, "left", 3);
+        }
+        const supply = [snapshot.placeOfSupply, snapshot.buyerStateCode].filter(Boolean).join(" · ");
+        if (supply) cell(`Place of supply: ${supply}`, split, right, 206, 7.4);
+      }
 
-      const columns = [28, 58, 116, 330, 370, 454, 502, 584];
-      box(page, x, 478, width, 30);
-      for (const cx of columns.slice(1, -1)) page.drawLine({ start: { x: cx, y: 230 }, end: { x: cx, y: 508 }, thickness: 0.55, color: BLACK });
-      const headers = [
-        "Sl.",
-        template.showHsn ? "HSN/SAC" : "",
-        "PARTICULARS",
-        template.showQuantity ? "Qty" : "",
-        template.showUnitPrice ? "Price" : "",
-        template.showGstRate ? "GST" : "",
-        "Total",
-      ];
-      for (let index = 0; index < headers.length; index++) cellText(page, bold, headers[index], columns[index], 497, columns[index + 1] - columns[index], 6.8, "center", 2);
-      box(page, x, 230, width, 248);
-      const rowHeight = 24;
-      lineChunks[chunkIndex].forEach((line: any, index: number) => {
-        const top = 468 - index * rowHeight;
-        page.drawLine({ start: { x, y: top - rowHeight + 10 }, end: { x: right, y: top - rowHeight + 10 }, thickness: 0.35, color: rgb(0.65, 0.65, 0.65) });
-        cellText(page, font, chunkIndex * 10 + index + 1, columns[0], top, columns[1] - columns[0], 7.4, "center", 1);
-        cellText(page, font, line.kind === "Note" || !template.showHsn ? "" : line.hsnCode, columns[1], top, columns[2] - columns[1], 7.4, "center", 1);
-        cellText(page, font, line.description, columns[2], top, columns[3] - columns[2], 7.2, "left", 2);
+      for (const x of grid.slice(1, -1)) vertical(x, 219, 591);
+      const labels = quote ? ["Sl. No.", "PACKAGE OPTION", "PARTICULARS"] : ["Sl. No.", template.showHsn ? "HSN CODE" : "", "PARTICULARS", template.showQuantity ? "Quantity" : "", template.showUnitPrice ? "Price" : "", template.showGstRate ? "GST" : "", "Total"];
+      labels.forEach((label, index) => cell(label, grid[index], grid[index + 1], 220, 7.1, "center", 1, bold));
+      lineChunks[pageIndex].forEach((line: any, index: number) => {
+        const top = !quote && lineChunks[pageIndex].length <= 4
+          ? [248, 314, 364, 389][index]
+          : 237 + index * 34.8;
+        cell(pageIndex * 10 + index + 1, grid[0], grid[1], top, 8.5, "center");
+        if (quote) {
+          cell(line.name, grid[1], grid[2], top, 8.6, "left", 3);
+          cell(line.description, grid[2], grid[3], top, 8.5, "left", 3);
+          return;
+        }
+        cell(line.description, grid[2], grid[3], top, 8.5, "left", 3);
         if (line.kind !== "Note") {
-          cellText(page, font, template.showQuantity ? (line.quantityNumber ?? line.quantity) : "", columns[3], top, columns[4] - columns[3], 7.4, "center", 1);
-          cellText(page, font, template.showUnitPrice ? moneyPlain(line.unitPriceMinor) : "", columns[4], top, columns[5] - columns[4], 7.4, "right", 1);
-          cellText(page, bold, template.showGstRate ? `${line.gstRate}%` : "", columns[5], top, columns[6] - columns[5], 7.2, "center", 1);
-          cellText(page, font, moneyPlain(line.taxableMinor), columns[6], top, columns[7] - columns[6], 7.4, "right", 1);
+          cell(template.showHsn ? line.hsnCode : "", grid[1], grid[2], top, 8.2, "center");
+          cell(template.showQuantity ? (line.quantityNumber ?? line.quantity) : "", grid[3], grid[4], top, 8.4, "right");
+          cell(template.showUnitPrice ? moneyPlain(line.unitPriceMinor) : "", grid[4], grid[5], top, 7.6, "right");
+          cell(template.showGstRate ? `${line.gstRate}` : "", grid[5], grid[6], top, 8.2, "center");
+          cell(moneyPlain(line.taxableMinor), grid[6], grid[7], top, 8.1, "right");
         }
       });
 
-      if (last) {
-        box(page, x, 95, half, 135);
-        box(page, x + half, 95, half, 135);
-        let ly = 218;
-        if (template.showBankDetails) {
-          cellText(page, bold, "BANK DETAILS", x, ly, half, 7.6, "left", 1); ly -= 15;
-          for (const line of [template.bankName, template.accountName, template.accountNumber ? `A/c: ${template.accountNumber}` : "", template.ifsc ? `IFSC: ${template.ifsc}` : "", template.accountType].filter(Boolean)) {
-            cellText(page, font, line, x, ly, half, 7, "left", 1); ly -= 13;
-          }
+      if (!last) {
+        cell("Continued on the next page", left, right, 653, 9, "center");
+      } else if (quote) {
+        cell("CANCELLATION TERMS", left, split, 602, 9, "left", 1, serif);
+        cell(snapshot.cancellationTerms, left, split, 624, 8.4, "left", 8);
+        cell("DETAILED PACKAGE", split, right, 602, 9, "left", 1, serif);
+        cell("See the detailed package for stays, transfers, itinerary, inclusions and full terms.", split, right, 621, 8.5, "left", 5);
+        cell("Services are subject to confirmation.", left, split, 746, 8.5, "center", 2);
+      } else {
+        horizontal(625, left, right);
+        for (const top of [608, 644, 663, 682, 701]) horizontal(top, split, right);
+        vertical(taxSplit, 591, 719);
+        const totals = snapshot.totals || {};
+        const taxableRows = [
+          ["GROSS TAXABLE VALUE", totals.taxableMinor],
+          ["CGST", template.showTaxBreakdown ? totals.cgstMinor : undefined],
+          ["SGST", template.showTaxBreakdown ? totals.sgstMinor : undefined],
+          ["IGST", template.showTaxBreakdown ? totals.igstMinor : undefined],
+          ["TOTAL GST", template.showTaxBreakdown ? totals.totalGstMinor : undefined],
+          ["TOTAL TCS", template.showTcs ? totals.tcsMinor : undefined],
+          ["GRAND TOTAL", totals.grandTotalMinor],
+        ] as const;
+        taxableRows.forEach(([label, value], index) => {
+          if (value === undefined) return;
+          const top = [594, 612, 630, 649, 668, 687, 706][index];
+          const face = index === 0 || index >= 4 ? bold : font;
+          cell(label, split, taxSplit, top, 8.5, "center", 1, face);
+          cell(moneyPlain(value), taxSplit, right, top, 9.3, "right", 1, index >= 4 ? font : face);
+        });
+        if (template.showBankDetails && [template.accountName, template.accountNumber, template.bankName, template.ifsc].some(Boolean)) {
+          cell("BANK DETAILS:", left, split, 626, 11, "left", 1, serif);
+          const details = [["A/c Name", template.accountName], ["A/c No", template.accountNumber], ["IFSC", template.ifsc], ["A/c Type", template.accountType], ["Bank", template.bankName]].filter(([, value]) => value);
+          details.forEach(([label, value], index) => {
+            cell(`${label}:`, left, left + 87, 643 + index * 14.5, 9.4, "left", 1, serif);
+            cell(value, left + 87, split, 643 + index * 14.5, 9.4, "left");
+          });
         }
         if (template.showPaymentSummary) {
-          ly -= 3;
-          cellText(page, bold, "PAYMENT STATUS AT INVOICE ISSUE", x, ly, half, 7.6, "left", 1); ly -= 14;
-          cellText(page, font, `Advance required: ${moneyPlain(snapshot.requiredAdvanceMinor)}${snapshot.advanceDueAt ? ` · ${safeDate(snapshot.advanceDueAt)}` : ""}`, x, ly, half, 7, "left", 1); ly -= 12;
-          cellText(page, font, `Verified paid: ${moneyPlain(snapshot.verifiedPaidMinor)}`, x, ly, half, 7, "left", 1); ly -= 12;
-          cellText(page, font, `Balance due: ${moneyPlain(snapshot.outstandingMinor)}${snapshot.dueDate ? ` · ${safeDate(snapshot.dueDate)}` : ""}`, x, ly, half, 7, "left", 1); ly -= 12;
-          if (snapshot.paymentNote) cellText(page, font, snapshot.paymentNote, x, ly, half, 6.4, "left", 2);
+          cell(`Paid: ${moneyPlain(snapshot.verifiedPaidMinor)} · Balance: ${moneyPlain(snapshot.outstandingMinor)}`, left, split, 608, 7.8, "left");
         }
-        const totals = snapshot.totals || {};
-        const totalRows = [
-          ["Taxable value", totals.taxableMinor],
-          ...(template.showTaxBreakdown ? [["CGST", totals.cgstMinor], ["SGST", totals.sgstMinor], ["IGST", totals.igstMinor]] : []),
-          ...(template.showTcs && totals.tcsMinor ? [[`TCS @ ${snapshot.tcsRate}%`, totals.tcsMinor]] : []),
-          ["GRAND TOTAL", totals.grandTotalMinor],
-        ].filter((row) => row[1] !== undefined && (row[1] !== 0 || row[0] === "Taxable value" || row[0] === "GRAND TOTAL"));
-        let ty = 216;
-        for (const [label, value] of totalRows) {
-          cellText(page, label === "GRAND TOTAL" ? bold : font, label, x + half, ty, half * 0.58, label === "GRAND TOTAL" ? 9 : 7.4, "left", 1);
-          cellText(page, label === "GRAND TOTAL" ? bold : font, moneyPlain(Number(value)), x + half + half * 0.58, ty, half * 0.42, label === "GRAND TOTAL" ? 9 : 7.4, "right", 1);
-          ty -= 17;
+        if (template.showReceiverSignature) cell("Receiver's Signature", left, split, 767, 8.5, "center");
+        if (template.showAuthorisedSignature) {
+          cell(`For ${template.legalName || "Early Bird Vacations"}`, split, right, 722, 8.5, "center", 1);
+          if (signature) picture(signature, split + 50, right - 50, 735, 764);
+          else if (template.authorisedSignatory) cell(template.authorisedSignatory, split, right, 747, 8, "center");
+          cell("(Authorised Signature)", split, right, 767, 8.5, "center");
         }
-      } else {
-        box(page, x, 95, width, 135);
-        cellText(page, font, "Continued on next page", x, 160, width, 9, "center", 1);
       }
-
-      box(page, x, 55, half, 40);
-      box(page, x + half, 55, half, 40);
-      if (template.showReceiverSignature) cellText(page, font, "Receiver's signature", x, 67, half, 7, "center", 1);
-      if (template.showAuthorisedSignature) {
-        if (signature) {
-          const scaled = signature.scale(Math.min(1, 70 / signature.width, 24 / signature.height));
-          page.drawImage(signature, { x: x + half + (half - scaled.width) / 2, y: 69, width: scaled.width, height: scaled.height });
-        }
-        cellText(page, font, `Authorised signatory${template.authorisedSignatory ? ` · ${template.authorisedSignatory}` : ""}`, x + half, 62, half, 6.6, "center", 1);
-      }
-      cellText(page, font, template.footerNote || "This is a computer-generated invoice.", x, 43, width, 6.5, "center", 1);
+      const footerText = quote ? "Quotation · Package details" : template.footerNote || "This is a computer-generated invoice.";
+      cell([footerText, copyLabel, lineChunks.length > 1 && `Page ${pageIndex + 1} of ${lineChunks.length}`].filter(Boolean).join(" · "), left, right, 780, 6.5, "center");
     }
   }
 
@@ -302,14 +363,14 @@ async function buildTaxInvoicePdf(snapshot: any) {
     }
     page.drawText("This summary describes travel services and is not a separate tax invoice.", { x: 42, y: 35, size: 7, font, color: MUTED });
   }
-  doc.setTitle(`Tax Invoice ${snapshot.number}`);
+  doc.setTitle(`${quote ? "Quotation" : "Tax Invoice"} ${snapshot.number}`);
   doc.setAuthor(template.legalName || "EarlyBird Travel CRM");
   doc.setCreationDate(new Date(snapshot.issuedAt));
   return doc.save();
 }
 
 export async function buildFinancialPdf(snapshot: any) {
-  if (snapshot.kind === "Invoice") return buildTaxInvoicePdf(snapshot);
+  if (snapshot.kind === "Invoice" || snapshot.kind === "Quotation") return buildRuledFinancialPdf(snapshot);
   const doc = await PDFDocument.create();
   doc.registerFontkit(fontkit);
   const font = await doc.embedFont(

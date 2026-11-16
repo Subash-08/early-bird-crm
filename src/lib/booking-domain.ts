@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { minor } from "./quote-domain";
+import { panNumber, passportNumber } from "./identity-numbers";
 
 const text = (max = 1000) => z.string().trim().max(max).default("");
 export const travellerSchema = z
@@ -12,6 +13,7 @@ export const travellerSchema = z
     nationality: text(80),
     phone: text(40),
     notes: text(500),
+    passportNumber,
   })
   .strict();
 
@@ -23,6 +25,7 @@ export const bookingDetailsSchema = z
     billingAddress: text(1000),
     deliveryAddress: text(1000),
     taxId: text(80),
+    payerPan: panNumber,
     placeOfSupply: text(120),
     buyerStateCode: text(10),
     travellers: z.array(travellerSchema).min(1).max(100),
@@ -39,6 +42,8 @@ export const bookingDetailsSchema = z
         path: ["travellers"],
         message: "Choose exactly one lead traveller.",
       });
+    if (new Set(value.travellers.map((traveller) => traveller.id)).size !== value.travellers.length)
+      ctx.addIssue({ code: "custom", path: ["travellers"], message: "Each traveller must be listed only once." });
     if (!value.travellers.find((traveller) => traveller.lead)?.name)
       ctx.addIssue({
         code: "custom",
@@ -106,15 +111,27 @@ export const releaseSchema = z
   .object({
     bookingId: z.string().min(1),
     version: z.number().int().positive(),
-    operationsAssigneeIds: z.array(z.string().min(1)).min(1).max(20),
+    coordinationMode: z.enum(["direct", "internal"]).default("internal"),
+    operationsAssigneeIds: z.array(z.string().min(1)).max(20),
     overrideReason: text(2000),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) => value.coordinationMode === "direct"
+      ? value.operationsAssigneeIds.length === 0
+      : value.operationsAssigneeIds.length > 0,
+    {
+      path: ["operationsAssigneeIds"],
+      message: "Choose active Operations staff for an internal assignment, or leave staff empty for agency coordination.",
+    },
+  );
 
 export function publicBookingForRole(booking: any, role: string) {
-  if (role === "owner") return booking;
-  if (role === "sales") {
+  if (role === "owner" || role === "sales") {
     const safe = structuredClone(booking);
+    if (safe.payer) delete safe.payer.pan;
+    for (const traveller of safe.travellers || []) delete traveller.passportNumber;
+    if (role === "owner") return safe;
     const content = safe.agreementSnapshot?.content;
     if (content) delete content.internalNotes;
     for (const option of [...(content?.options || []), safe.agreementSnapshot?.selectedOption].filter(Boolean)) {
@@ -128,6 +145,7 @@ export function publicBookingForRole(booking: any, role: string) {
     if (key in booking) safe[key] = structuredClone(booking[key]);
   }
   safe.travellers = (booking.travellers || []).filter((t: any) => !t.cancelled).map((t: any) => ({ id: t.id, name: t.name, type: t.type, lead: t.lead, phone: t.lead ? t.phone : "", notes: t.notes }));
+  if (booking.paymentTracking === false) safe.paymentTracking = false;
   return safe;
 }
 

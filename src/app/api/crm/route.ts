@@ -11,6 +11,8 @@ import {
   customerDetail,
 } from "@/server/crm";
 import type { WorkspaceScope } from "@/server/crm";
+import { enquiryActivity } from "@/server/crm";
+import { enquiryQuoteWorkspace, packageTemplateWorkspace, requestGaps } from "@/server/quotes";
 import type { WorkspaceListQuery } from "@/server/crm";
 import { readUpload, preview, commit } from "@/server/imports";
 import { collection } from "@/server/db";
@@ -45,6 +47,7 @@ import {
   decideCashHandover,
   generateOperationsDocument,
   initializeOperations,
+  copyPackageServices,
   recordCashHandover,
   reportCollection,
   reportIncident,
@@ -60,6 +63,7 @@ import {
 } from "@/server/operations";
 import { createInvoicePrintCopies, saveInvoiceDraft, saveInvoiceTemplate } from "@/server/invoices";
 import { publicErrorMessage } from "@/lib/public-error";
+import { canOpenWorkspace, type View } from "@/lib/workspace-access";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 function failure(e: unknown) {
@@ -88,6 +92,23 @@ export async function GET(req: Request) {
   try {
     const a = await actor(req.headers);
     const url = new URL(req.url);
+    if (url.searchParams.get("resource") === "enquiry-activity") {
+      const id = url.searchParams.get("id") || "";
+      if (!id || id.length > 160) throw new Error("404: Enquiry not found.");
+      const result = await enquiryActivity(a, id);
+      return Response.json({ ...result, quoteGaps: requestGaps(result.enquiry) }, { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (url.searchParams.get("resource") === "enquiry-quote") {
+      const id = url.searchParams.get("id") || "";
+      if (!id || id.length > 160) throw new Error("404: Quotation not found.");
+      return Response.json(await enquiryQuoteWorkspace(a, id), { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (url.searchParams.get("resource") === "package-templates") {
+      const id = url.searchParams.get("id") || "";
+      if (id.length > 160) throw new Error("404: Package template not found.");
+      const data = await packageTemplateWorkspace(a, id, Number(url.searchParams.get("page") || 1), url.searchParams.get("q") || "");
+      return Response.json(data, { headers: { "Cache-Control": "private, no-store" } });
+    }
     if (url.searchParams.get("resource") === "customer-search") {
       return Response.json(
         {
@@ -114,12 +135,8 @@ export async function GET(req: Request) {
     ]);
     if (!scopes.has(requestedScope as WorkspaceScope))
       throw new Error("404: Workspace page not found.");
-    const permitted =
-      a.role === "owner"
-        ? scopes.has(requestedScope as WorkspaceScope)
-        : a.role === "operations"
-          ? ["shell", "dashboard", "operations", "tasks", "notifications", "reports", "attendance"].includes(requestedScope)
-          : !["all", "imports", "invoice-settings", "staff"].includes(requestedScope);
+    const permitted = requestedScope === "all" ? a.role === "owner"
+      : requestedScope === "shell" || canOpenWorkspace(a.role, requestedScope as View);
     if (!permitted) throw new Error("403: This workspace page is not available for your role.");
     const listQuery: WorkspaceListQuery = {
       page: Number(url.searchParams.get("page") || 1),
@@ -274,6 +291,9 @@ export async function POST(req: Request) {
         break;
       case "operations-initialize":
         result = await initializeOperations(a, body.data);
+        break;
+      case "operations-copy-package":
+        result = await copyPackageServices(a, body.data);
         break;
       case "supplier-save":
         result = await saveSupplier(a, body.data);

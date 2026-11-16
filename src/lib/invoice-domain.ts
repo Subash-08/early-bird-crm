@@ -106,7 +106,7 @@ export const defaultInvoiceTemplate: InvoiceTemplate = {
   roundTaxToRupee: true,
   logoDataUrl: "",
   signatureDataUrl: "",
-  copyLabels: ["Customer copy", "Office copy"],
+  copyLabels: ["Customer copy"],
   showDeliveryAddress: true,
   showBuyerGstin: true,
   showBankDetails: true,

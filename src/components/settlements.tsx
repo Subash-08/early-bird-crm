@@ -31,7 +31,7 @@ async function fileData(file: File | undefined) {
 
 export function Settlements({ s, q, reload, fail }: { s: Row; q: string; reload: () => Promise<void>; fail: (message: string) => void }) {
   const [selectedId, setSelectedId] = useState(""), [data, setData] = useState<Row | null>(null), [busy, setBusy] = useState(false), [loading, setLoading] = useState(false), [notice, setNotice] = useState("");
-  const [tab, setTab] = useState("Overview"), [form, setForm] = useState<"money" | "change" | "">("");
+  const [tab, setTab] = useState("Booking changes"), [form, setForm] = useState<"money" | "change" | "">("");
   const [reason, setReason] = useState("");
   const load = useCallback(async () => {
     if (!selectedId) return;
@@ -48,8 +48,8 @@ export function Settlements({ s, q, reload, fail }: { s: Row; q: string; reload:
   const owner = s.actor.role === "owner";
   const canSubmit = !owner || s.staff.some((p: Row) => p.role === "owner" && p.status === "active" && p._id !== s.actor.id);
   if (!selectedId) return <section>
-    <div className="operations-hero"><div><p className="eyebrow">Money & changes</p><h2>Finish every trip with clear balances.</h2><p>Supplier bills, refunds and booking changes, all linked to the right booking.</p></div><Wallet size={38}/></div>
-    <div className="settlement-bookings">{s.bookings.filter((b: Row) => `${b.bookingNumber} ${b.destination}`.toLowerCase().includes(q.toLowerCase())).map((b: Row) => <button className="panel settlement-booking" key={b._id} onClick={() => { setData(null); setSelectedId(b._id); }}><div><strong>{b.bookingNumber}</strong><p>{b.destination}</p></div><span className="badge">{b.financialClosed ? "Financially closed" : b.status}</span><span>{money(b.totalMinor, b.currency)}</span></button>)}</div>
+    <div className="operations-hero settlement-hero"><div><h2>Trip changes and cancellations</h2><p>Open a booking to request or review a change to the accepted trip.</p></div><Wallet size={38}/></div>
+    <div className="settlement-bookings">{s.bookings.filter((b: Row) => `${b.bookingNumber} ${b.destination}`.toLowerCase().includes(q.toLowerCase())).map((b: Row) => <button className="panel settlement-booking" key={b._id} onClick={() => { setData(null); setTab("Booking changes"); setSelectedId(b._id); }}><div><strong>{b.bookingNumber}</strong><p>{b.destination}</p></div><span className="badge">{b.financialClosed ? "Financially closed" : b.status}</span></button>)}</div>
     {!s.bookings.length && <div className="empty-state"><Wallet/><h3>No bookings yet</h3><p>Accept a quotation and create its booking first.</p></div>}
   </section>;
   const b = data?.booking, t = data?.totals;
@@ -57,11 +57,13 @@ export function Settlements({ s, q, reload, fail }: { s: Row; q: string; reload:
     <button className="button secondary" onClick={() => { setSelectedId(""); setForm(""); }}><ArrowLeft size={16}/> All bookings</button>
     {loading && <p role="status">Refreshing settlement…</p>}
     {!data || !b ? <button className="button secondary" onClick={load}>Retry loading</button> : <>
-      <div className="section-title"><div><p className="eyebrow">{b.bookingNumber}</p><h2>{b.destination || "Booking settlement"}</h2><p>{b.financialClosed ? "Financially closed" : "Settlement open"} · {b.currency}</p></div><button className="button secondary" onClick={load} disabled={busy || loading}><RefreshCw size={16}/> Refresh</button></div>
+      <div className="section-title"><div><p className="eyebrow">{b.bookingNumber}</p><h2>{b.destination || "Booking changes"}</h2><p>{b.status}</p></div><button className="button secondary" onClick={load} disabled={busy || loading}><RefreshCw size={16}/> Refresh</button></div>
       {notice && <p className="settlement-notice" role="status"><CheckCircle2 size={18}/>{notice}</p>}
-      <div className="settlement-metrics">{[["Customer paid", t.receivedMinor], ["Still to collect", t.outstandingMinor], ["Refund still to pay", t.refundPendingMinor], ["Customer credit", t.customerCreditMinor]].map(([label, value]) => <article className="panel" key={String(label)}><small>{label}</small><strong>{money(Number(value), b.currency)}</strong></article>)}</div>
-      <nav className="settlement-tabs" aria-label="Settlement sections">{["Overview", "Transactions", "Booking changes"].map(name => <button key={name} className={tab === name ? "button primary" : "button secondary"} onClick={() => { setTab(name); setForm(""); }}>{name}</button>)}</nav>
-      {!canSubmit && <p className="settlement-help"><ShieldCheck size={18}/> With one Owner, ask Sales to submit financial entries and booking changes. You then approve or reject them here.</p>}
+      {b.paymentTracking !== false && <>
+        {tab !== "Booking changes" && <div className="settlement-metrics">{[["Customer paid", t.receivedMinor], ["Still to collect", t.outstandingMinor], ["Refund still to pay", t.refundPendingMinor], ["Customer credit", t.customerCreditMinor]].map(([label, value]) => <article className="panel" key={String(label)}><small>{label}</small><strong>{money(Number(value), b.currency)}</strong></article>)}</div>}
+        <nav className="settlement-tabs" aria-label="Booking sections">{["Booking changes", "Overview", "Transactions"].map(name => <button key={name} className={tab === name ? "button primary" : "button secondary"} onClick={() => { setTab(name); setForm(""); }}>{name === "Overview" ? "Legacy balances" : name === "Transactions" ? "Legacy transactions" : name}</button>)}</nav>
+      </>}
+      {!canSubmit && <p className="settlement-help"><ShieldCheck size={18}/> With one Owner, Sales submits a booking change and the Owner reviews it.</p>}
       {tab === "Overview" && <>
         <div className="panel settlement-section"><h3>What needs attention</h3>{data.blockers.length ? <ul>{data.blockers.map((item: string) => <li key={item}>{item}</li>)}</ul> : <p>All balances and required checks are resolved.</p>}
           {owner && <div className="settlement-actions"><Field label={b.financialClosed ? "Reason to reopen" : "Closing note"}><input value={reason} onChange={e => setReason(e.target.value)} placeholder="Explain the final review"/></Field><button className="button primary" disabled={busy || reason.trim().length < 3 || (!b.financialClosed && !!data.blockers.length)} onClick={() => run("settlement-close", { bookingId: b._id, version: b.version, reopen: !!b.financialClosed, reason })}>{b.financialClosed ? "Reopen settlement" : "Close financial settlement"}</button></div>}

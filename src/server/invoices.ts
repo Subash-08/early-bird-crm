@@ -10,7 +10,7 @@ import {
 } from "@/lib/invoice-domain";
 import { collection } from "./db";
 import { audit, owner, transact } from "./crm";
-import { buildFinancialPdf } from "./financial-pdf";
+import { buildFinancialPdf, invoicePrintSnapshot } from "./financial-pdf";
 
 const now = () => new Date().toISOString();
 
@@ -165,7 +165,8 @@ export async function createInvoicePrintCopies(a: Actor, input: unknown) {
     !(invoice.snapshot.lines || []).every((line: Record<string, unknown>) => line.kind && line.id)
   )
     throw new Error("This older invoice can only be printed from its original PDF. Renamed copies are available for invoices issued with the new template.");
-  const bytes = await buildFinancialPdf({ ...invoice.snapshot, copyLabels: parsed.copyLabels });
+  const booking = await (await collection("bookings")).findOne({ _id: invoice.bookingId, org: a.org }, { projection: { agreementSnapshot: 1 } });
+  const bytes = await buildFinancialPdf(invoicePrintSnapshot(invoice.snapshot, booking?.agreementSnapshot, parsed.copyLabels));
   const documentId = crypto.randomUUID();
   await (
     await collection("financeDocuments")

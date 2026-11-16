@@ -86,15 +86,14 @@ export function Bookings({
     <>
       <div className="booking-hero">
         <div>
-          <p className="eyebrow">Accepted trips</p>
-          <h2>Verify the advance, then release clear work.</h2>
+          <p className="eyebrow">Booking desk</p>
+          <h2>Accepted trips and handoff</h2>
           <p>
-            Money, booking and supplier confirmation stay separate so the team
-            always knows what is truly complete.
+            Review the accepted option, confirm travellers and dates, or start the service checklist.
           </p>
         </div>
         <span className="booking-lock">
-          <ShieldCheck /> Owner verifies every payment
+          <ShieldCheck /> Owner starts service coordination
         </span>
       </div>
       {accepted.length > 0 && (
@@ -123,7 +122,7 @@ export function Bookings({
         </section>
       )}
       <div className="quote-metrics">
-        <Metric
+        {rows.some((row: Row) => row.paymentTracking !== false) && <><Metric
           label="Awaiting advance"
           value={
             rows.filter((row: Row) => row.status === "Awaiting advance").length
@@ -136,12 +135,12 @@ export function Bookings({
               (row: Row) => row.status === "Pending verification",
             ).length
           }
-        />
+        /></>}
         <Metric
           label="Ready to release"
           value={
             rows.filter(
-              (row: Row) => row.status === "Ready for operations release",
+              (row: Row) => ["Ready for coordination", "Ready for operations release"].includes(row.status),
             ).length
           }
         />
@@ -168,9 +167,6 @@ export function Bookings({
               </small>
             </div>
             <Status value={booking.status} />
-            {s.actor.role !== "operations" && (
-              <strong>{money(booking.totalMinor, booking.currency)}</strong>
-            )}
             <ArrowRight />
           </button>
         ))}
@@ -260,7 +256,7 @@ function BookingDetail({ s, booking, busy, close, run }: any) {
               <ReceiptText /> Invoice
             </button>
           )}
-          {s.actor.role !== "operations" && (
+          {s.actor.role !== "operations" && booking.paymentTracking !== false && (
             <button
               className={tab === "payments" ? "active" : ""}
               onClick={() => setTab("payments")}
@@ -291,7 +287,7 @@ function BookingDetail({ s, booking, busy, close, run }: any) {
       {tab === "invoice" && s.actor.role !== "operations" && (
         <InvoiceEditor s={s} booking={booking} invoice={invoice} busy={busy} run={run} />
       )}
-      {tab === "payments" && s.actor.role !== "operations" && (
+      {tab === "payments" && s.actor.role !== "operations" && booking.paymentTracking !== false && (
         <Payments
           s={s}
           booking={booking}
@@ -340,33 +336,6 @@ function Summary({ s, booking, invoice, busy, run }: any) {
       </section>
       {s.actor.role !== "operations" && (
         <>
-          <div className="money-grid">
-            <article>
-              <span>Booking value</span>
-              <b>{money(booking.totalMinor, booking.currency)}</b>
-            </article>
-            <article>
-              <span>Required advance</span>
-              <b>{money(booking.requiredAdvanceMinor, booking.currency)}</b>
-            </article>
-            <article>
-              <span>Verified</span>
-              <b>{money(booking.verifiedPaidMinor, booking.currency)}</b>
-            </article>
-            <article>
-              <span>Outstanding</span>
-              <b>{money(booking.outstandingMinor, booking.currency)}</b>
-            </article>
-          </div>
-          {booking.unappliedCreditMinor > 0 && (
-            <div className="warning-box">
-              <b>Unapplied customer credit</b>
-              <p>
-                {money(booking.unappliedCreditMinor, booking.currency)} is above
-                the booking value and needs Owner review.
-              </p>
-            </div>
-          )}
           <section className="document-strip">
             <div>
               <ReceiptText />
@@ -380,9 +349,9 @@ function Summary({ s, booking, invoice, busy, run }: any) {
                 <a
                   className="button secondary"
                   href={`/api/documents/finance/${invoice.documentId}`}
-                  target="_blank"
+                  download
                 >
-                  <Download /> Open invoice
+                  <Download /> Download invoice
                 </a>
               )}
               {s.actor.role === "owner" && invoice?.status === "Draft" && (
@@ -429,8 +398,9 @@ function Summary({ s, booking, invoice, busy, run }: any) {
               </details>
             )}
           <p className="truth-note">
-            <ShieldCheck /> Accepted quote, verified cash and supplier
-            confirmation are intentionally shown as separate facts.
+            <ShieldCheck /> {booking.paymentTracking === false
+              ? "Confirm hotels and transport in Operations before marking the trip complete."
+              : "Accepted quote, verified cash and supplier confirmation are tracked separately."}
           </p>
         </>
       )}
@@ -627,7 +597,7 @@ function People({ s, booking, busy, run }: any) {
           <Plus /> Add traveller
         </button>
       </div>
-      <Field
+      {booking.paymentTracking !== false && <><Field
         label="Advance due"
         type="datetime-local"
         value={data.advanceDueAt}
@@ -638,7 +608,7 @@ function People({ s, booking, busy, run }: any) {
         type="datetime-local"
         value={data.balanceDueAt}
         set={(value: string) => setData({ ...data, balanceDueAt: value })}
-      />
+      /></>}
       <Field
         label="Coordinator notes"
         value={data.coordinatorNotes}
@@ -646,13 +616,13 @@ function People({ s, booking, busy, run }: any) {
         area
         span
       />
-      <Field
+      {booking.paymentTracking !== false && <Field
         label="Customer payment note (optional)"
         value={data.paymentNote}
         set={(value: string) => setData({ ...data, paymentNote: value })}
         area
         span
-      />
+      />}
       <Foot busy={busy} text="Save booking details" />
     </form>
   );
@@ -684,7 +654,7 @@ function InvoiceEditor({ s, booking, invoice, busy, run }: any) {
   catch (error) { calculationError = (error as Error).message; }
   if (!invoice) return <div className="booking-empty"><ReceiptText /><b>Invoice draft is missing</b><p>Refresh the booking or contact the Owner.</p></div>;
   if (invoice.status !== "Draft") return (
-    <div className="issued-invoice-card"><FileCheck2 /><div><b>{invoice.invoiceNumber}</b><p>This invoice is locked. It contains {invoice.snapshot?.copyLabels?.length || 1} labelled print copy/copies with the same invoice number.</p></div><a className="button secondary" href={`/api/documents/finance/${invoice.documentId}`} target="_blank"><Download /> Open printable PDF</a></div>
+    <div className="issued-invoice-card"><FileCheck2 /><div><b>{invoice.invoiceNumber}</b><p>Issued invoice</p></div><a className="button secondary" href={`/api/documents/finance/${invoice.documentId}`} download><Download /> Download invoice</a></div>
   );
   if (s.actor.role !== "owner") return <div className="warning-box"><b>Owner review required</b><p>Sales can complete payer and billing details. Only the Owner edits tax lines and issues the invoice.</p></div>;
   return (
@@ -771,7 +741,7 @@ function Payments({ s, booking, rows, busy, run }: any) {
       {s.actor.role === "owner" && (
         <section className="advance-amend">
           <button className="text-button" onClick={() => setAmend(!amend)}>
-            Amend required advance
+            {booking.requiredAdvanceMinor > 0 ? "Change required advance" : "Set required advance"}
           </button>
           {amend && (
             <AdvanceAmend
@@ -1011,6 +981,7 @@ function AdvanceAmend({ booking, busy, submit }: any) {
     >
       <input
         type="number"
+        aria-label="Required advance amount"
         min="0"
         step="0.01"
         value={amount}
@@ -1018,6 +989,7 @@ function AdvanceAmend({ booking, busy, submit }: any) {
       />
       <input
         value={reason}
+        aria-label="Reason for advance amount"
         onChange={(event) => setReason(event.target.value)}
         placeholder="Why terms changed"
       />
@@ -1025,13 +997,14 @@ function AdvanceAmend({ booking, busy, submit }: any) {
         className="button secondary"
         disabled={busy || reason.trim().length < 3}
       >
-        Save amendment
+        Save advance
       </button>
     </form>
   );
 }
 
 function Operations({ s, booking, staff, busy, run }: any) {
+  const [mode, setMode] = useState<"direct" | "internal">("direct");
   const [selected, setSelected] = useState<string[]>(
     booking.operationsAssigneeIds || [],
   );
@@ -1042,7 +1015,7 @@ function Operations({ s, booking, staff, busy, run }: any) {
         <div className="release-banner">
           <Check />
           <div>
-            <b>Operations released</b>
+            <b>{booking.operationsCoordinationMode === "direct" ? "Agency coordination started" : "Operations released"}</b>
             <p>
               Inventory is still pending until each supplier/service is actually
               confirmed.
@@ -1068,12 +1041,13 @@ function Operations({ s, booking, staff, busy, run }: any) {
       <div className="booking-empty">
         <ClipboardCheck />
         <b>Not released yet</b>
-        <p>Owner will release work after invoice and advance review.</p>
+        <p>{booking.paymentTracking === false ? "The Owner will start the service checklist." : "Owner will release work after invoice and advance review."}</p>
       </div>
     );
   const advanceMet =
     booking.verifiedPaidMinor >= booking.requiredAdvanceMinor &&
     booking.requiredAdvanceMinor > 0;
+  const requiresOverride = booking.paymentTracking !== false && !advanceMet;
   return (
     <form
       className="release-form"
@@ -1082,26 +1056,34 @@ function Operations({ s, booking, staff, busy, run }: any) {
         run("booking-release", {
           bookingId: booking._id,
           version: booking.version,
-          operationsAssigneeIds: selected,
+          coordinationMode: mode,
+          operationsAssigneeIds: mode === "internal" ? selected : [],
           overrideReason: reason,
         });
       }}
     >
-      <div className={advanceMet ? "release-ready" : "warning-box"}>
-        {advanceMet ? <ShieldCheck /> : <AlertTriangle />}
+      <div className={requiresOverride ? "warning-box" : "release-ready"}>
+        {requiresOverride ? <AlertTriangle /> : <ShieldCheck />}
         <div>
           <b>
-            {advanceMet ? "Advance threshold met" : "Owner exception required"}
+            {requiresOverride ? "Owner exception required" : advanceMet ? "Advance threshold met" : "Ready for coordination"}
           </b>
           <p>
-            {advanceMet
-              ? "Choose the Operations staff who will receive the initial service checklist."
-              : "Verified advance is insufficient or zero. Explain why work may start."}
+            {requiresOverride
+              ? "Verified advance is insufficient or zero. Explain why work may start."
+              : "Choose who will receive the service checklist."}
           </p>
         </div>
       </div>
-      <h3>Assign Operations staff</h3>
-      <div className="staff-checks">
+      <label className="field">
+        <span>Who will coordinate?</span>
+        <select value={mode} onChange={(event) => setMode(event.target.value === "internal" ? "internal" : "direct")}>
+          <option value="direct">Owner or Sales lead</option>
+          <option value="internal" disabled={!staff.length}>Operations staff</option>
+        </select>
+      </label>
+      {mode === "direct" && <p>The active booking lead receives the checklist. The Owner receives it if the lead is unavailable.</p>}
+      {mode === "internal" && <div className="staff-checks">
         {staff.map((person: Row) => (
           <label key={person._id}>
             <input
@@ -1121,8 +1103,8 @@ function Operations({ s, booking, staff, busy, run }: any) {
             </span>
           </label>
         ))}
-      </div>
-      {!advanceMet && (
+      </div>}
+      {requiresOverride && (
         <Field
           label="Owner release reason"
           value={reason}
@@ -1135,10 +1117,10 @@ function Operations({ s, booking, staff, busy, run }: any) {
       <button
         className="button primary"
         disabled={
-          busy || !selected.length || (!advanceMet && reason.trim().length < 3)
+          busy || (mode === "internal" && !selected.length) || (requiresOverride && reason.trim().length < 3)
         }
       >
-        <ClipboardCheck /> Release initial checklist
+        <ClipboardCheck /> Start service checklist
       </button>
     </form>
   );

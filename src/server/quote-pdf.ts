@@ -7,7 +7,8 @@ import fontkit from "@pdf-lib/fontkit";
 import { collection } from "./db";
 import { notify } from "./crm";
 import type { Actor } from "@/lib/domain";
-import { displayMinor } from "@/lib/quote-domain";
+import { packageDocument } from "@/lib/package-document";
+import { buildFinancialPdf, embedBusinessLogo } from "./financial-pdf";
 
 type FontChoice = { font: PDFFont; characters: Set<number> };
 type Painter = {
@@ -22,11 +23,9 @@ const W = 595.28,
   M = 46,
   INK = rgb(0.09, 0.17, 0.23),
   MUTED = rgb(0.39, 0.47, 0.52),
-  BLUE = rgb(0.086, 0.466, 0.655),
-  NAVY = rgb(0.063, 0.165, 0.263),
-  SAND = rgb(0.965, 0.945, 0.91),
-  CORAL = rgb(0.937, 0.463, 0.373),
-  LINE = rgb(0.86, 0.9, 0.91);
+  BLUE = rgb(0.16, 0.34, 0.25),
+  NAVY = rgb(0.125, 0.278, 0.224),
+  LINE = rgb(0.84, 0.89, 0.85);
 const now = () => new Date().toISOString();
 
 async function fonts(doc: PDFDocument) {
@@ -161,8 +160,8 @@ function paragraph(
   const size = opts.size || 9,
     indent = opts.indent || 0,
     lines = wrap(p, text, W - M * 2 - indent, size);
-  ensure(p, lines.length * (size + 4) + (opts.gap || 8));
   for (const line of lines) {
+    ensure(p, size + 4);
     drawText(p, line, M + indent, p.y, size, opts.color || INK);
     p.y -= size + 4;
   }
@@ -201,214 +200,142 @@ function list(p: Painter, items: string[]) {
   }
   for (const item of items) {
     const lines = wrap(p, item, W - M * 2 - 18, 9);
-    ensure(p, lines.length * 13 + 4);
+    ensure(p, 17);
     p.page.drawCircle({ x: M + 3, y: p.y + 3, size: 2, color: BLUE });
-    lines.forEach((line, i) => drawText(p, line, M + 15, p.y - i * 13, 9));
-    p.y -= lines.length * 13 + 5;
+    for (const line of lines) {
+      ensure(p, 17);
+      drawText(p, line, M + 15, p.y, 9);
+      p.y -= 13;
+    }
+    p.y -= 5;
   }
   p.y -= 5;
 }
 
-export async function buildQuotePdf(snapshot: any) {
-  const doc = await PDFDocument.create(),
-    approved = new Date(snapshot.approvedAt);
-  doc.setTitle(`${snapshot.quoteNumber} v${snapshot.quoteVersion}`);
-  doc.setAuthor("EarlyBird Travel");
-  doc.setSubject("Approved travel quotation");
-  doc.setCreator("EarlyBird Travel CRM");
-  doc.setProducer("EarlyBird Travel CRM");
-  doc.setCreationDate(approved);
-  doc.setModificationDate(approved);
-  const p = {} as Painter;
-  p.doc = doc;
-  p.fonts = await fonts(doc);
-  p.pages = [];
-  addPage(p, true);
-  p.page.drawRectangle({
-    x: 0,
-    y: H - 190,
-    width: W,
-    height: 190,
-    color: NAVY,
-  });
-  p.page.drawRectangle({
-    x: W - 155,
-    y: H - 190,
-    width: 155,
-    height: 190,
-    color: BLUE,
-    opacity: 0.35,
-  });
-  drawText(p, "EARLYBIRD", M, H - 58, 20, rgb(1, 1, 1));
-  drawText(p, "TRAVEL QUOTATION", M, H - 89, 8, rgb(0.63, 0.84, 0.91));
-  drawText(
-    p,
-    snapshot.content.title || "Travel proposal",
-    M,
-    H - 126,
-    24,
-    rgb(1, 1, 1),
-  );
-  drawText(
-    p,
-    `${snapshot.quoteNumber}  |  Version ${snapshot.quoteVersion}`,
-    M,
-    H - 153,
-    9,
-    rgb(0.84, 0.91, 0.94),
-  );
-  p.y = H - 224;
-  labelValue(p, "Prepared for", snapshot.customer.name, M, 150);
-  labelValue(
-    p,
-    "Contact",
-    [snapshot.customer.phone, snapshot.customer.email]
-      .filter(Boolean)
-      .join(" / "),
-    M + 175,
-    155,
-  );
-  labelValue(p, "Valid until", snapshot.content.validUntil, M + 355, 150);
-  p.y -= 64;
-  if (snapshot.content.summary)
-    paragraph(p, snapshot.content.summary, { size: 10, gap: 14 });
-  heading(p, "Trip overview");
-  labelValue(p, "Destination", snapshot.content.destinations, M, 150);
-  labelValue(
-    p,
-    "Travel dates",
-    snapshot.content.dateScope === "Exact"
-      ? `${snapshot.content.startDate} to ${snapshot.content.endDate}`
-      : snapshot.content.dateLabel,
-    M + 175,
-    155,
-  );
-  labelValue(
-    p,
-    "Travellers",
-    `${snapshot.content.adults} adult(s)${snapshot.content.childrenAges ? `, children: ${snapshot.content.childrenAges}` : ""}${snapshot.content.infants ? `, ${snapshot.content.infants} infant(s)` : ""}`,
-    M + 355,
-    150,
-  );
-  p.y -= 64;
-  labelValue(p, "Services", snapshot.content.services.join(", "), M, W - M * 2);
-  p.y -= 54;
-  heading(p, "Package options");
-  for (const o of snapshot.content.options) {
-    ensure(p, 98);
-    p.page.drawRectangle({
-      x: M,
-      y: p.y - 75,
-      width: W - M * 2,
-      height: 82,
-      color: SAND,
-      borderColor: LINE,
-      borderWidth: 0.7,
+export async function brandedQuoteSnapshot(snapshot: any, org: string) {
+  const templateId = snapshot.company?.logoTemplateId;
+  const branding = templateId ? await (await collection("invoiceTemplates")).findOne(
+    { _id: templateId, org }, { projection: { logoDataUrl: 1 } },
+  ) : null;
+  return { ...snapshot, company: { ...snapshot.company, logoDataUrl: branding?.logoDataUrl || "" } };
+}
+
+export async function buildQuotePdf(snapshot: any, kind: "quotation" | "package" = "quotation") {
+  const content = packageDocument(snapshot.content);
+  const customer = snapshot.customer || {};
+  const printableDate = (value: string) => {
+    const date = new Date(`${value}T00:00:00Z`);
+    return value && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("en-IN", {
+      day: "numeric", month: "short", year: "numeric", timeZone: "UTC",
+    }).format(date) : value || "";
+  };
+  const travel = content.dateScope === "Exact"
+    ? [printableDate(content.startDate), printableDate(content.endDate)].filter(Boolean).join(" to ")
+    : content.dateLabel;
+  if (kind === "quotation") {
+    return buildFinancialPdf({
+      kind: "Quotation",
+      number: snapshot.quoteNumber,
+      quoteVersion: snapshot.quoteVersion,
+      issuedAt: snapshot.approvedAt,
+      dueDate: content.validUntil,
+      template: snapshot.company,
+      payer: customer,
+      trip: { title: content.title, destination: content.destinations, dates: travel },
+      lines: content.options.map((option) => ({
+        name: option.name,
+        description: [option.description, option.hotel, option.mealPlan].filter(Boolean).join(" · "),
+      })),
+      cancellationTerms: content.cancellationTerms,
     });
-    drawText(p, o.name, M + 14, p.y - 19, 12, NAVY);
-    drawText(
-      p,
-      displayMinor(o.totalMinor, snapshot.content.currency),
-      W - M - 132,
-      p.y - 19,
-      12,
-      BLUE,
-    );
-    drawText(p, `${o.priceBasis} x ${o.quantity}`, M + 14, p.y - 37, 8, MUTED);
-    const desc = [
-      o.description,
-      o.hotel && `Hotel: ${o.hotel}`,
-      o.mealPlan && `Meal plan: ${o.mealPlan}`,
-      o.notes,
-    ]
-      .filter(Boolean)
-      .join(" | ");
-    const lines = wrap(p, desc, W - M * 2 - 28, 8).slice(0, 2);
-    lines.forEach((line, i) =>
-      drawText(p, line, M + 14, p.y - 54 - i * 11, 8, INK),
-    );
-    p.y -= 94;
   }
-  if (snapshot.content.optionalExtras.length) {
-    heading(p, "Optional extras");
-    for (const x of snapshot.content.optionalExtras)
-      paragraph(
-        p,
-        `${x.name} - ${displayMinor(Number(x.priceMinor || 0), snapshot.content.currency)} (${x.priceBasis})${x.description ? `: ${x.description}` : ""}`,
-        { indent: 10, gap: 4 },
-      );
+
+  const optionNames = new Map(content.options.map((option) => [option.id, option.name]));
+  const doc = await PDFDocument.create();
+  const logo = await embedBusinessLogo(doc, snapshot.company?.logoDataUrl);
+  doc.setTitle(`${snapshot.quoteNumber} v${snapshot.quoteVersion} - Detailed travel package`);
+  doc.setAuthor(snapshot.company?.legalName || "Early Bird Vacations");
+  doc.setSubject("Detailed travel package");
+  doc.setCreationDate(new Date(snapshot.approvedAt));
+  doc.setModificationDate(new Date(snapshot.approvedAt));
+  const p = { doc, fonts: await fonts(doc), pages: [] } as unknown as Painter;
+  addPage(p, true);
+  p.page.drawRectangle({ x: 0, y: H - 177, width: W, height: 177, color: NAVY });
+  if (logo) {
+    const scaled = logo.scale(Math.min(160 / logo.width, 48 / logo.height));
+    p.page.drawRectangle({ x: M, y: H - 73, width: 174, height: 53, color: rgb(1, 1, 1) });
+    p.page.drawImage(logo, { x: M + (174 - scaled.width) / 2, y: H - 73 + (53 - scaled.height) / 2, ...scaled });
   }
-  if (snapshot.content.itinerary.length) {
-    heading(p, "Day-wise itinerary");
-    for (const day of snapshot.content.itinerary) {
-      ensure(p, 54);
-      drawText(
-        p,
-        `DAY ${day.day}${day.date ? ` - ${day.date}` : ""}`,
-        M,
-        p.y,
-        7,
-        BLUE,
-      );
-      p.y -= 17;
-      drawText(p, day.title || day.city || "Planned day", M, p.y, 11, NAVY);
-      p.y -= 17;
-      const details = [
-        day.city && `Place: ${day.city}`,
-        day.activities,
-        day.transfers && `Transfers: ${day.transfers}`,
-        day.stay && `Stay: ${day.stay}`,
-        day.meals && `Meals: ${day.meals}`,
-        day.notes,
-      ]
-        .filter(Boolean)
-        .join(" | ");
-      paragraph(p, details, { gap: 10 });
+  drawText(p, "DETAILED PACKAGE", W - M - 98, H - 51, 9, rgb(0.88, 0.92, 0.89));
+  const travelTitle = wrap(p, content.title || "Travel package", W - M * 2, 22).slice(0, 2);
+  travelTitle.forEach((line, index) => drawText(p, line, M, H - 107 - index * 24, 22, rgb(1, 1, 1)));
+  drawText(p, `${snapshot.quoteNumber} · Version ${snapshot.quoteVersion}`, M, H - 153, 9, rgb(0.88, 0.92, 0.89));
+  p.page.drawRectangle({ x: M - 7, y: H - 307, width: W - M * 2 + 14, height: 117, color: rgb(0.969, 0.980, 0.965), borderColor: LINE, borderWidth: 0.7 });
+  p.y = H - 201;
+  labelValue(p, "Prepared for", customer.name, M, 150);
+  labelValue(p, "Destination", content.destinations, M + 167, 153);
+  labelValue(p, "Travel dates", travel || "To be confirmed", M + 337, 165);
+  p.y -= 61;
+  labelValue(p, "Travellers", [
+    content.adults > 0 && `${content.adults} adult${content.adults === 1 ? "" : "s"}`,
+    content.childrenAges && `Children: ${content.childrenAges}`,
+    content.infants > 0 && `${content.infants} infant${content.infants === 1 ? "" : "s"}`,
+  ].filter(Boolean).join(" · ") || "To be confirmed", M, 308);
+  labelValue(p, "Valid until", printableDate(content.validUntil), M + 337, 165);
+  p.y -= 58;
+  if (content.summary) paragraph(p, content.summary, { size: 10, gap: 10 });
+
+  const rows = (title: string, values: { title: string; details: (string | false | undefined)[] }[]) => {
+    if (!values.length) return;
+    heading(p, title);
+    for (const row of values) {
+      ensure(p, 41);
+      paragraph(p, row.title, { size: 10, color: NAVY, gap: 3 });
+      const details = row.details.filter(Boolean).join(" · ");
+      if (details) paragraph(p, details, { indent: 10, gap: 5 });
+      p.page.drawLine({ start: { x: M, y: p.y + 1 }, end: { x: W - M, y: p.y + 1 }, thickness: 0.5, color: LINE });
+      p.y -= 9;
     }
+  };
+  if (content.services.length) {
+    heading(p, "Services covered");
+    paragraph(p, content.services.join(" · "));
   }
-  if (snapshot.content.stays.length) {
-    heading(p, "Accommodation");
-    for (const stay of snapshot.content.stays)
-      paragraph(
-        p,
-        `${stay.city}: ${stay.property} | ${stay.checkIn} to ${stay.checkOut} | ${stay.rooms} room(s), ${stay.roomType || "category to be confirmed"} | ${stay.mealPlan || "meal plan not specified"}${stay.notes ? ` | ${stay.notes}` : ""}`,
-        { gap: 7 },
-      );
+  rows("Package options", content.options.map((option) => ({
+    title: option.name, details: [option.description, option.hotel && `Stay: ${option.hotel}`, option.mealPlan && `Meal plan: ${option.mealPlan}`],
+  })));
+  rows("Accommodation and meal plan", content.stays.map((stay) => ({
+    title: stay.property || "Stay to be confirmed",
+    details: [stay.city, optionNames.get(stay.optionId),
+      [printableDate(stay.checkIn), printableDate(stay.checkOut)].filter(Boolean).join(" to ") || "Stay dates to be confirmed",
+      stay.rooms > 0 && `${stay.rooms} room${stay.rooms === 1 ? "" : "s"}`, stay.roomType, stay.occupancy,
+      stay.extraBed, stay.mealPlan && `Meal plan: ${stay.mealPlan}`, stay.notes],
+  })));
+  rows("Transport and transfers", content.transport.map((leg) => ({
+    title: [leg.mode, [leg.from, leg.to].filter(Boolean).join(" to ")].filter(Boolean).join(" · "),
+    details: [leg.responsibility, optionNames.get(leg.optionId), printableDate(leg.date), leg.time, leg.time && leg.timeZone, leg.provider,
+      leg.passengers && `Passengers: ${leg.passengers}`, leg.details],
+  })));
+  rows("Day-wise itinerary", content.itinerary.map((day) => ({
+    title: `Day ${day.day} · ${day.title || day.city || "Planned day"}`,
+    details: [day.city, printableDate(day.date), day.activities, day.transfers && `Transfers: ${day.transfers}`,
+      day.stay && `Stay: ${day.stay}`, day.meals && `Meals: ${day.meals}`, day.notes],
+  })));
+  rows("Optional extras", content.optionalExtras.map((extra) => ({
+    title: extra.name, details: [extra.included ? "Included" : "Optional", extra.description],
+  })));
+  heading(p, "Inclusions");
+  list(p, content.inclusions);
+  heading(p, "Exclusions");
+  list(p, content.exclusions);
+  if (content.cancellationTerms) {
+    heading(p, "Cancellation terms");
+    paragraph(p, content.cancellationTerms);
   }
-  if (snapshot.content.transport.length) {
-    heading(p, "Transport and coordination");
-    for (const leg of snapshot.content.transport)
-      paragraph(
-        p,
-        `${leg.mode}: ${leg.from} to ${leg.to}${leg.date ? ` on ${leg.date}` : ""}${leg.time ? ` at ${leg.time}${leg.timeZone ? ` ${leg.timeZone}` : ""}` : ""} | ${leg.responsibility}${leg.responsibility === "Customer booked" ? " - not charged by agency" : ""}${leg.details ? ` | ${leg.details}` : ""}`,
-        { gap: 7 },
-      );
+  if (content.customerNotes) {
+    heading(p, "Useful information");
+    paragraph(p, content.customerNotes);
   }
-  heading(p, "Package inclusions");
-  list(p, snapshot.content.inclusions);
-  heading(p, "Package exclusions");
-  list(p, snapshot.content.exclusions);
-  heading(p, "Payment schedule");
-  paragraph(
-    p,
-    `Advance required: ${displayMinor(Number(snapshot.content.advanceAmountMinor || 0), snapshot.content.currency)}. ${snapshot.content.advanceDue}`,
-  );
-  paragraph(p, snapshot.content.balanceTerms);
-  heading(p, "Cancellation terms");
-  paragraph(p, snapshot.content.cancellationTerms);
-  if (snapshot.content.customerNotes) {
-    heading(p, "Important notes");
-    paragraph(p, snapshot.content.customerNotes);
-  }
-  if (p.y > 62)
-    drawText(
-      p,
-      `Approved ${snapshot.approvedAt.slice(0, 10)} by ${snapshot.approvedBy}`,
-      M,
-      p.y,
-      7,
-      MUTED,
-    );
   footer(p);
   return doc.save();
 }
@@ -429,7 +356,7 @@ export async function processQuotePdfJob(jobId: string) {
       q = await quotes.findOne({ _id: job.quoteId, org: job.org });
     if (!q || !q.snapshot || !["Approved", "Sent"].includes(q.status))
       throw new Error("Approved frozen quotation snapshot is unavailable.");
-    const bytes = await buildQuotePdf(q.snapshot),
+    const bytes = await buildQuotePdf(await brandedQuoteSnapshot(q.snapshot, q.org)),
       documentId = `quote:${q._id}:v${q.quoteVersion}`,
       hash = createHash("sha256").update(bytes).digest("hex");
     await (
@@ -443,6 +370,7 @@ export async function processQuotePdfJob(jobId: string) {
           type: "quote-pdf",
           quoteId: q._id,
           quoteVersion: q.quoteVersion,
+          layoutVersion: 2,
           filename: `${q.quoteNumber}-v${q.quoteVersion}.pdf`,
           mime: "application/pdf",
           data: new Binary(bytes),

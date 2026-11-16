@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ClientSession } from "mongodb";
-import { type Actor, canAccess } from "@/lib/domain";
+import { type Actor, canAccess, canWorkEnquiry } from "@/lib/domain";
 import {
   assertApproverReady,
   minor,
@@ -12,23 +12,28 @@ import {
   publicQuoteForRole,
 } from "@/lib/quote-domain";
 import { collection, type Row } from "./db";
-import { audit, notify, owner, transact } from "./crm";
+import { audit, notify, owner, syncFollowUp, transact } from "./crm";
+import { indiaInput } from "@/lib/workspace-time";
+import { activeQuoteStatuses, quoteRequestBlock } from "@/lib/quote-request-state";
 import { processQuotePdfJob } from "./quote-pdf";
+import { getActiveInvoiceTemplate } from "./invoices";
 
 const now = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
 function stripInternal(content: any) {
   return publicQuoteForRole({ content }, "sales").content;
 }
-async function quoteAccess(a: Actor, quoteId: string, s?: ClientSession) {
+export async function quoteAccess(a: Actor, quoteId: string, s?: ClientSession, includeTeam = false) {
   if (a.role === "operations")
     throw new Error("403: Quotations are not available to Operations.");
   const q = await (
     await collection("quotes")
   ).findOne({ _id: quoteId, org: a.org }, { session: s });
   if (!q) throw new Error("404: Quotation not found.");
-  if (!canAccess(a, q.assigneeId))
-    throw new Error("403: Quotation is not assigned to you.");
+  if (!canAccess(a, q.assigneeId)) {
+    const enquiry = includeTeam ? await (await collection("enquiries")).findOne({ _id: q.enquiryId, org: a.org }, { session: s }) : null;
+    if (!enquiry || !canWorkEnquiry(a, enquiry)) throw new Error("403: Quotation is not assigned to you.");
+  }
   return q;
 }
 async function enquiryAccess(a: Actor, enquiryId: string, s?: ClientSession) {
@@ -37,7 +42,7 @@ async function enquiryAccess(a: Actor, enquiryId: string, s?: ClientSession) {
     await collection("enquiries")
   ).findOne({ _id: enquiryId, org: a.org }, { session: s });
   if (!e) throw new Error("404: Enquiry not found.");
-  if (!canAccess(a, e.assigneeId))
+  if (!canWorkEnquiry(a, e))
     throw new Error("403: Enquiry is not assigned to you.");
   if (e.reviewNeeded)
     throw new Error(
@@ -93,10 +98,10 @@ async function nextQuoteNumber(a: Actor, s: ClientSession) {
   );
   return `EB-Q-${year}-${String(counter?.value || 1).padStart(4, "0")}`;
 }
-function requestGaps(e: Row) {
+export function requestGaps(e: Row) {
   const gaps: string[] = [];
-  if (!e.destination && !e.travelPreference) gaps.push("destination");
-  if (e.dateMode === "Unknown" && !e.travelPreference)
+  if (!e.destination) gaps.push("destination");
+  if (e.dateMode !== "Exact" && !e.travelPreference)
     gaps.push("travel date or flexible range");
   if (e.adults === null && !e.childrenAges && !e.infants)
     gaps.push("traveller count");
@@ -113,10 +118,39 @@ function requestGaps(e: Row) {
   return gaps;
 }
 
+export async function enquiryQuoteWorkspace(a: Actor, quoteId: string) {
+  const q = await quoteAccess(a, quoteId, undefined, true);
+  const [enquiry, customer, quoteTemplates, booking] = await Promise.all([
+    (await collection("enquiries")).findOne({ _id: q.enquiryId, org: a.org }, { projection: { destination: 1 } }),
+    (await collection("customers")).findOne({ _id: q.customerId, org: a.org }, { projection: { name: 1 } }),
+    ["Requested", "Needs information", "Draft"].includes(q.status)
+      ? (await collection("quoteTemplates")).find({ org: a.org, active: true }, { projection: { name: 1, active: 1 } }).sort({ name: 1 }).limit(100).toArray()
+      : [],
+    q.status === "Accepted" ? (await collection("bookings")).findOne({ quoteId: q._id, org: a.org }, { projection: { bookingNumber: 1, status: 1 } }) : null,
+  ]);
+  const invoice = booking && (a.role === "owner" || q.assigneeId === a.id)
+    ? await (await collection("invoices")).findOne({ org: a.org, bookingId: booking._id, status: "Issued" }, { projection: { documentId: 1, invoiceNumber: 1 } })
+    : null;
+  return { quote: publicQuoteForRole(q, a.role), enquiry, customer, quoteTemplates, booking: booking && { ...booking, invoice } };
+}
+
+function reusablePackage(content: QuoteContent): QuoteContent {
+  return {
+    ...content, startDate: "", endDate: "", dateLabel: "", dateScope: "Indicative", validUntil: "",
+    adults: 0, childrenAges: "", infants: 0, internalNotes: "", customerNotes: "",
+    advanceAmount: "0", advanceDue: "", balanceTerms: "",
+    itinerary: content.itinerary.map((day) => ({ ...day, date: "" })),
+    stays: content.stays.map((stay) => ({ ...stay, checkIn: "", checkOut: "" })),
+    transport: content.transport.map((leg) => ({ ...leg, date: "", reference: "", passengers: "" })),
+  };
+}
+
 export async function requestQuote(a: Actor, input: unknown) {
   const p = quoteRequestSchema.parse(input);
   return transact(async (s) => {
     const e = await enquiryAccess(a, p.enquiryId, s);
+    const blocked = quoteRequestBlock({ stage: e.stage, reviewNeeded: e.reviewNeeded });
+    if (blocked) throw new Error(blocked);
     const gaps = requestGaps(e);
     if (gaps.length)
       throw new Error(
@@ -129,15 +163,7 @@ export async function requestQuote(a: Actor, input: unknown) {
         org: a.org,
         enquiryId: e._id,
         status: {
-          $in: [
-            "Requested",
-            "Needs information",
-            "Draft",
-            "Approved",
-            "Sent",
-            "Accepted",
-            "Changes requested",
-          ],
+          $in: [...activeQuoteStatuses],
         },
       },
       { session: s },
@@ -235,6 +261,7 @@ export async function requestQuote(a: Actor, input: unknown) {
       );
     }
     await audit(a, qid, "Quotation requested", s);
+    await audit(a, e._id, `Quotation ${quoteNumber} requested`, s);
     return qid;
   });
 }
@@ -245,14 +272,23 @@ export async function saveQuote(
   quoteId: string,
   version: number,
 ) {
-  owner(a);
   const content = quoteContentSchema.parse(input);
   return transact(async (s) => {
-    const q = await quoteAccess(a, quoteId, s);
+    const q = await quoteAccess(a, quoteId, s, true);
     if (!["Requested", "Needs information", "Draft"].includes(q.status))
       throw new Error(
         "Approved, sent and decided quotations are immutable. Create a new version.",
       );
+    if (a.role !== "owner") {
+      const oldOptions = (q.content?.options || []) as { id: string; internalCost?: string }[];
+      const costs = new Map(oldOptions.map((item) => [item.id, item.internalCost || "0"]));
+      if (new Set(content.options.map((item) => item.id)).size !== content.options.length)
+        throw new Error("Each price option must have a unique ID.");
+      if (oldOptions.some((item) => minor(item.internalCost || "0") > 0 && !content.options.some((next) => next.id === item.id)))
+        throw new Error("Ask the Owner to remove a price option that has an internal cost.");
+      content.internalNotes = String(q.content?.internalNotes || "");
+      content.options = content.options.map((item) => ({ ...item, internalCost: costs.get(item.id) || "0" }));
+    }
     const r = await (
       await collection("quotes")
     ).updateOne(
@@ -266,6 +302,7 @@ export async function saveQuote(
     if (!r.matchedCount)
       throw new Error("409: Quotation changed. Refresh before saving.");
     await audit(a, q._id, "Quotation draft saved", s);
+    await audit(a, q.enquiryId, `Quotation ${q.quoteNumber} draft saved`, s);
     return q._id;
   });
 }
@@ -421,13 +458,17 @@ export async function approveQuote(a: Actor, input: unknown) {
       ...content,
       options,
       optionalExtras,
-      advanceAmountMinor: minor(content.advanceAmount),
+      advanceAmount: "0",
+      advanceAmountMinor: 0,
+      advanceDue: "",
+      balanceTerms: "",
     };
     const customer = await (
       await collection("customers")
     ).findOne({ _id: q.customerId, org: a.org }, { session: s });
     if (!customer) throw new Error("Customer no longer exists.");
     const publicContent = stripInternal(contentWithAmounts);
+    const company = await getActiveInvoiceTemplate(a, s);
     const snapshot = {
       quoteNumber: q.quoteNumber,
       quoteVersion: q.quoteVersion,
@@ -437,6 +478,15 @@ export async function approveQuote(a: Actor, input: unknown) {
         email: customer.email,
       },
       content: publicContent,
+      paymentHandledInBooking: true,
+      company: {
+        legalName: company.legalName,
+        address: company._id === "default" ? "" : company.address,
+        phone: company.phone,
+        email: company.email,
+        gstin: company.gstin,
+        logoTemplateId: company.logoDataUrl ? company._id : "",
+      },
       approvedAt: now(),
       approvedBy: a.name,
     };
@@ -780,14 +830,18 @@ export async function decideQuote(a: Actor, input: unknown) {
       throw new Error(
         "Record the approved PDF as shared before the customer decision.",
       );
+    const options = q.snapshot?.content?.options || [];
+    const selectedOptionId = p.selectedOptionId || (options.length === 1 ? options[0].id : "");
     if (p.decision === "Accepted") {
+      if (q.snapshot?.content?.validUntil && indiaInput(p.decidedAt).slice(0, 10) > q.snapshot.content.validUntil)
+        throw new Error("The quote had expired by the acceptance date. Create and share a new version.");
       if (
-        !p.selectedOptionId ||
-        !q.snapshot.content.options.some(
-          (x: Row) => x.id === p.selectedOptionId,
+        !selectedOptionId ||
+        !options.some(
+          (x: Row) => x.id === selectedOptionId,
         )
       )
-        throw new Error("Choose exactly one approved package option.");
+        throw new Error("Choose the package the customer accepted.");
       if (!p.reference && !p.reason)
         throw new Error("Record the acceptance reference or evidence note.");
       const other = await (
@@ -810,7 +864,7 @@ export async function decideQuote(a: Actor, input: unknown) {
       throw new Error("Add the customer reason or requested changes.");
     const accepted =
       p.decision === "Accepted"
-        ? { selectedOptionId: p.selectedOptionId, acceptedSnapshot: q.snapshot }
+        ? { selectedOptionId, acceptedSnapshot: q.snapshot }
         : {};
     const r = await (
       await collection("quotes")
@@ -819,6 +873,7 @@ export async function decideQuote(a: Actor, input: unknown) {
       {
         $set: {
           status: p.decision,
+          customerDecision: p.decision,
           decisionAt: p.decidedAt,
           decisionChannel: p.channel,
           decisionReference: p.reference,
@@ -849,40 +904,34 @@ export async function decideQuote(a: Actor, input: unknown) {
       },
       { session: s },
     );
-    if (p.decision === "Accepted")
-      await (
+    if (p.decision === "Accepted" || p.decision === "Rejected") {
+      const enquiry = await (
         await collection("enquiries")
-      ).updateOne(
-        { _id: q.enquiryId },
+      ).findOneAndUpdate(
+        { _id: q.enquiryId, org: a.org },
         {
           $set: {
-            stage: "Won",
-            nextAction: "Create booking and collect the agreed advance",
+            ...(p.decision === "Accepted"
+              ? { stage: "Won", nextAction: "Create booking" }
+              : { stage: "Lost", reason: p.reason, nextAction: "" }),
             nextFollowUp: "",
             updatedAt: now(),
           },
           $inc: { version: 1 },
         },
-        { session: s },
+        { session: s, returnDocument: "after" },
       );
-    else if (p.decision === "Rejected")
-      await (
-        await collection("enquiries")
-      ).updateOne(
-        { _id: q.enquiryId },
-        {
-          $set: {
-            stage: "Lost",
-            reason: p.reason,
-            nextAction: "",
-            nextFollowUp: "",
-            updatedAt: now(),
-          },
-          $inc: { version: 1 },
-        },
-        { session: s },
-      );
-    else
+      if (enquiry) {
+        await syncFollowUp(a, enquiry, s);
+        await audit(a, enquiry._id, `Customer decision: ${p.decision} (${q.quoteNumber} v${q.quoteVersion})`, s);
+      }
+      if (p.decision === "Accepted") {
+        const recipients = new Set([q.assigneeId, ...(await activeOwners(a, s)).map((person) => person._id)]);
+        recipients.delete(a.id);
+        for (const recipient of recipients)
+          await notify(a, recipient, `quote-accepted:${q._id}:${recipient}`, `Customer accepted ${q.quoteNumber}`, q._id, s);
+      }
+    } else
       for (const o of await activeOwners(a, s)) {
         await task(
           a,
@@ -913,9 +962,28 @@ export async function decideQuote(a: Actor, input: unknown) {
   });
 }
 
+export async function packageTemplateWorkspace(a: Actor, id: string, requestedPage: number, search: string) {
+  owner(a);
+  const templates = await collection("quoteTemplates");
+  if (id) {
+    const template = await templates.findOne({ _id: id, org: a.org });
+    if (!template) throw new Error("404: Package template not found.");
+    return { template };
+  }
+  const pageSize = 20;
+  const page = Math.min(500, Math.max(1, Number.isInteger(requestedPage) ? requestedPage : 1));
+  const term = search.trim().slice(0, 100);
+  const match = term ? new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") : null;
+  const filter = { org: a.org, ...(match ? { $or: [{ name: match }, { destination: match }] } : {}) };
+  const rows = await templates.find(filter, { projection: { name: 1, destination: 1, active: 1, updatedAt: 1 } })
+    .sort({ name: 1, _id: 1 }).skip((page - 1) * pageSize).limit(pageSize + 1).toArray();
+  return { templates: rows.slice(0, pageSize), hasMore: rows.length > pageSize && page < 500 };
+}
+
 export async function saveTemplate(a: Actor, input: unknown) {
   owner(a);
   const p = templateSchema.parse(input);
+  p.content = reusablePackage(p.content);
   const tid = p.id || id(),
     c = await collection("quoteTemplates"),
     old = p.id ? await c.findOne({ _id: p.id, org: a.org }) : null;
@@ -956,33 +1024,44 @@ export async function saveTemplate(a: Actor, input: unknown) {
 }
 
 export async function applyTemplate(a: Actor, input: unknown) {
-  owner(a);
   const p = z
     .object({
       quoteId: z.string(),
       version: z.number(),
       templateId: z.string(),
+      replace: z.boolean().default(false),
     })
     .strict()
     .parse(input);
   return transact(async (s) => {
-    const q = await quoteAccess(a, p.quoteId, s);
+    const q = await quoteAccess(a, p.quoteId, s, true);
     if (!["Requested", "Needs information", "Draft"].includes(q.status))
       throw new Error("Templates can only be applied to editable quotations.");
     const t = await (
       await collection("quoteTemplates")
     ).findOne({ _id: p.templateId, org: a.org, active: true }, { session: s });
     if (!t) throw new Error("Template is unavailable.");
+    const hasWork = ["itinerary", "stays", "transport", "options", "optionalExtras", "inclusions", "exclusions"].some((key) => q.content?.[key]?.length);
+    if (hasWork && !p.replace) throw new Error("Confirm replacing the current draft with the template.");
+    if (a.role !== "owner" && q.content?.options?.some((option: { internalCost?: string }) => minor(option.internalCost || "0") > 0))
+      throw new Error("Ask the Owner to replace a draft that already has private supplier costs.");
+    const source = reusablePackage(quoteContentSchema.parse(t.content));
+    const previousDestination = String(q.content?.destinations || "").trim();
+    if (previousDestination && t.destination && previousDestination.toLowerCase() !== String(t.destination).trim().toLowerCase())
+      throw new Error("Choose a template for the same destination as this quote.");
     const merged = {
-      ...t.content,
-      title: q.content?.title || t.content.title,
-      destinations: q.content?.destinations || t.content.destinations,
+      ...source,
+      options: a.role === "owner" ? source.options : source.options.map((option) => ({ ...option, internalCost: "0" })),
+      internalNotes: q.content?.internalNotes || "",
+      title: q.content?.title || source.title,
+      destinations: previousDestination || source.destinations,
       adults: q.content?.adults || 0,
       childrenAges: q.content?.childrenAges || "",
       infants: q.content?.infants || 0,
       startDate: q.content?.startDate || "",
       endDate: q.content?.endDate || "",
       dateLabel: q.content?.dateLabel || "",
+      dateScope: q.content?.dateScope || "Indicative",
     };
     const r = await (
       await collection("quotes")
@@ -1001,6 +1080,7 @@ export async function applyTemplate(a: Actor, input: unknown) {
     );
     if (!r.matchedCount) throw new Error("409: Quotation changed. Refresh.");
     await audit(a, q._id, `Applied package template: ${t.name}`, s);
+    await audit(a, q.enquiryId, `Applied package template: ${t.name}`, s);
   });
 }
 

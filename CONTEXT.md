@@ -4,6 +4,24 @@ Updated: 4 November 2026
 
 ## Current state
 
+Reports opens the Customer & trip register for Owner and Sales, with India-time creation-date filters and filtered or all-authorized CSV/XLSX export. Operations keeps its existing summary reports. The dashboard is named Overview and keeps due and overdue work visible.
+
+The browser package preview and customer quotation/package downloads omit prices. Issued invoices retain billing lines and use the supplied Early Bird Vacations logo as the default. Quotation and invoice PDFs use the measured Letter grid from the agency reference. Sent quotes expose a separate Customer asked for changes action. Issued invoice downloads are available from Bookings, Customer details, and the linked accepted quotation.
+
+The enquiry Activity tab shows the quotation request action beside Status. Quote approval lists the specific hotel and validity details to complete, with links to the right editor section. The browser package preview shows accommodation, meal descriptions, transport, day-by-day activities, extras and terms. Draft and approved package totals share the same calculation.
+
+Newly approved quotes create bookings without payment tracking. The Owner can start coordination without a payment or issued invoice. Invoice generation remains available. Booking changes is the default at `/settlements`; historical payment-tracked bookings still show their legacy records. Operations can copy the accepted option's stays and transport into draft services. The development seed adds five reusable honeymoon templates derived from agency samples. See `docs/booking-operations-and-demo-update.md`.
+
+The sidebar groups role-allowed pages under Travel desk, Daily work and Agency setup. Quote details open at `/quotations/[id]`; Owners manage reusable packages at `/package-templates`. New approved quotations omit advance and balance terms, with any advance handled in Bookings. Quote detail and enquiry detail display booking progress, and quote and enquiry-team alerts open the linked record. See `docs/workspace-and-quotation-test-report.md` for manual checks.
+
+Newly generated quotation PDFs use the invoice-style grid and approval-time agency branding, with a separate detailed package PDF. The Owner can start a booking checklist with either the active booking lead (Owner is the fallback) or Operations staff. Agency-coordinated bookings can link a supplier or customer car without assigning an internal driver. See the rollout checks in `docs/enquiry-workspace-rollout.md`.
+
+Existing enquiries open on a dedicated page. The Quote & package tab checks saved trip details, requests a quote, and opens linked versions. Follow-up inputs and activity history use India time. Staff with draft access can reuse package templates, and approved quotes offer a separate detailed package PDF.
+
+Enquiries now support a lead, creator access, and additional team members, with Start, Trip, and Activity sections. The lead owns the single follow-up, collaborators can update the enquiry, and the Owner retains full access. The enquiry team can prepare quotation drafts; approval, private pricing inputs, and sharing permissions remain protected. See `docs/enquiry-workspace-rollout.md` for checks and remaining work.
+
+Owners and Sales can add and select a customer from inside the enquiry drawer without leaving or clearing the draft. Quick entry uses the existing permission, contact validation and duplicate checks.
+
 **Team & setup → View activity** opens an Owner-only page for the selected team member, with date filters for due tasks, logged completions and contact attempts, driver assignments, and attendance. Sales and Operations have **My attendance** with the same period presets and their own totals. Historical calls and completions without a dated event are not inferred.
 
 The Owner attendance calendar now shows dated overviews and supports named office holidays. Staff can request off-site attendance with work location, hours, reason and an optional reference. Owner approval records off-site work as present without replacing original clock events; request notifications link back to Attendance.

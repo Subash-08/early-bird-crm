@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { buildFinancialPdf } from "../src/server/financial-pdf";
+import { buildFinancialPdf, invoicePrintSnapshot } from "../src/server/financial-pdf";
 import { calculateInvoice, defaultInvoiceTemplate } from "../src/lib/invoice-domain";
 
 const lines = [
@@ -56,7 +56,7 @@ const snapshot = {
 async function main() {
   await mkdir("output/pdf", { recursive: true });
   const output = "output/pdf/earlybird-tax-invoice-reference-sample.pdf";
-  await writeFile(output, await buildFinancialPdf(snapshot));
+  await writeFile(output, await buildFinancialPdf(invoicePrintSnapshot(snapshot, null)));
   console.log(output);
 }
 

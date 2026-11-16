@@ -24,6 +24,41 @@ beforeAll(async () => {
 });
 afterAll(async () => { if (db) await (await db.client()).close(); if (replica) await replica.stop(); });
 
+it("keeps an enquiry creator and team scoped through handoff, status updates and removal", async () => {
+  const crm = await import("../src/server/crm");
+  const testOrg = "enquiry-collab";
+  const seller = { ...staff, id: "creator-c", org: testOrg };
+  const lead = { ...staff, id: "lead-c", org: testOrg };
+  const collaborator = { ...staff, id: "team-c", org: testOrg };
+  const ownerActor = { ...owner, id: "owner-c", org: testOrg };
+  const driver = { ...staff, id: "driver-c", org: testOrg, role: "operations" as const };
+  const outsider = { ...staff, id: "other-c", org: testOrg };
+  await (await db.collection("staff")).insertMany([seller, lead, collaborator, ownerActor, driver, outsider].map((person) => ({
+    _id: person.id, name: person.name, role: person.role, org: testOrg, version: 1, status: "active", email: `${person.id}@example.test`,
+  })));
+  const customerId = await crm.saveCustomer(seller, { name: "Test customer", email: "lead@example.test" });
+  const firstContactAt = new Date().toISOString();
+  const input = { customerId, source: "Phone", firstContactAt, assigneeId: lead.id, collaboratorIds: [collaborator.id, collaborator.id, lead.id] };
+  await expect(crm.saveEnquiry(seller, { ...input, collaboratorIds: [driver.id] })).rejects.toThrow(/active|operations/i);
+  const enquiryId = await crm.saveEnquiry(seller, input);
+  const savedInput = { ...input, collaboratorIds: [collaborator.id] };
+  expect((await crm.snapshot(collaborator, "enquiries")).enquiries.map((row) => row._id)).toContain(enquiryId);
+  expect((await crm.snapshot(outsider, "enquiries")).enquiries).toHaveLength(0);
+  expect((await crm.enquiryActivity(collaborator, enquiryId)).followUp?.status).toBe("To do");
+  await expect(crm.saveEnquiry(collaborator, { ...savedInput, assigneeId: outsider.id }, enquiryId, 1)).rejects.toThrow("change the lead");
+  await crm.saveEnquiry(collaborator, { ...savedInput, stage: "Contacting" }, enquiryId, 1);
+  expect((await crm.enquiryActivity(ownerActor, enquiryId)).events).toEqual(expect.arrayContaining([
+    expect.objectContaining({ event: "Status: New → Contacting" }),
+  ]));
+  await expect(crm.saveEnquiry(seller, savedInput, enquiryId, 1)).rejects.toThrow("Enquiry changed");
+  await crm.saveEnquiry(seller, { ...input, assigneeId: outsider.id, collaboratorIds: [], stage: "Contacting" }, enquiryId, 2);
+  await expect(crm.enquiryActivity(collaborator, enquiryId)).rejects.toThrow("not found");
+  await expect(crm.enquiryActivity(lead, enquiryId)).rejects.toThrow("not found");
+  expect((await crm.enquiryActivity(seller, enquiryId)).followUp?.status).toBe("To do");
+  expect(await (await db.collection("tasks")).findOne({ org: testOrg, _id: `follow:${enquiryId}` })).toMatchObject({ assigneeId: outsider.id });
+  expect(await (await db.collection("tasks")).countDocuments({ org: testOrg, enquiryId })).toBe(1);
+});
+
 it("approves a correction that needs a new daily record without a MongoDB version conflict", async () => {
   const id = await attendance.requestAttendanceCorrection(staff, {
     workDate: "2025-11-10", requestedCheckIn: "2025-11-10T09:30:00+05:30", requestedCheckOut: "2025-11-10T18:30:00+05:30", reason: "Internet was unavailable.",

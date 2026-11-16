@@ -7,6 +7,8 @@ import {
   enquirySchema,
   normalizePhone,
   canAccess,
+  canWorkEnquiry,
+  enquiryMembership,
   taskStates,
   roles,
 } from "@/lib/domain";
@@ -15,6 +17,7 @@ import { publicQuoteForRole } from "@/lib/quote-domain";
 import { publicBookingForRole } from "@/lib/booking-domain";
 import { publicArrangementForRole } from "@/lib/operations-domain";
 import { defaultInvoiceTemplate } from "@/lib/invoice-domain";
+import { bookingCreationActions, bookingNextAction } from "@/lib/booking-next-action";
 export function owner(a: Actor) {
   if (a.role !== "owner") throw new Error("403: Owner access required.");
 }
@@ -92,6 +95,7 @@ export async function customerAllowed(
   a: Actor,
   cid: string,
   s?: ClientSession,
+  sharedRead = false,
 ) {
   if (a.role === "operations")
     throw new Error(
@@ -107,7 +111,7 @@ export async function customerAllowed(
     !(await (
       await collection("enquiries")
     ).findOne(
-      { org: a.org, customerId: cid, assigneeId: a.id },
+      { org: a.org, customerId: cid, ...(sharedRead ? enquiryMembership(a.id) : { assigneeId: a.id }) },
       { session: s },
     ))
   )
@@ -135,7 +139,7 @@ export async function searchCustomers(a: Actor, input: unknown) {
               _id: {
                 $in: await (await collection("enquiries")).distinct(
                   "customerId",
-                  { org: a.org, assigneeId: a.id },
+                  { org: a.org, ...enquiryMembership(a.id) },
                 ),
               },
             },
@@ -164,12 +168,12 @@ export async function searchCustomers(a: Actor, input: unknown) {
 }
 
 export async function customerDetail(a: Actor, customerId: string) {
-  const customer = await customerAllowed(a, customerId);
+  const { pan, passportNumber, ...customer } = await customerAllowed(a, customerId, undefined, true);
   const assignedFilter = a.role === "owner" ? {} : { assigneeId: a.id };
   const salesBookingFilter = a.role === "owner" ? {} : { salesAssigneeId: a.id };
   const [enquiries, quotes, bookings, tasks] = await Promise.all([
     (await collection("enquiries")).find(
-      { org: a.org, customerId, ...assignedFilter },
+      { org: a.org, customerId, ...(a.role === "owner" ? {} : enquiryMembership(a.id)) },
     ).sort({ updatedAt: -1 }).limit(50).toArray(),
     (await collection("quotes")).find(
       { org: a.org, customerId, ...assignedFilter },
@@ -190,13 +194,19 @@ export async function customerDetail(a: Actor, customerId: string) {
     : [];
   return {
     actor: a,
-    customer,
+    customer: { ...customer, panOnFile: Boolean(pan), passportOnFile: Boolean(passportNumber) },
     enquiries,
     quotes: quotes.map((quote) => publicQuoteForRole(quote, a.role)),
     bookings: bookings.map((booking) => publicBookingForRole(booking, a.role)),
     tasks,
     invoices,
   };
+}
+
+export async function customerEdit(a: Actor, customerId: string) {
+  const customer = await customerAllowed(a, customerId);
+  const { name, phone, email, address, language, notes, reviewNeeded, pan, passportNumber, version } = customer;
+  return { name, phone, email, address, language, notes, reviewNeeded, pan, passportNumber, version };
 }
 export type WorkspaceScope =
   | "all" | "shell" | "dashboard" | "enquiries" | "customers" | "quotations"
@@ -453,7 +463,7 @@ export async function snapshot(
     : [];
   const enquiryFilter = {
     org: a.org,
-    ...(a.role === "owner" ? {} : { assigneeId: a.id }),
+    ...(a.role === "owner" ? {} : enquiryMembership(a.id)),
     ...(enquiryIsPrimary && status ? { stage: status } : {}),
     ...(enquiryIsPrimary && assigneeId && a.role === "owner" ? { assigneeId } : {}),
     ...(enquiryIsPrimary ? dateRange("updatedAt") : {}),
@@ -477,7 +487,9 @@ export async function snapshot(
     : {
         $or: [
           { assigneeId: a.id },
-          { _id: { $in: enqs.map((x) => x.customerId) } },
+          { _id: { $in: customerIsPrimary
+            ? await (await collection("enquiries")).distinct("customerId", { org: a.org, ...enquiryMembership(a.id) })
+            : enqs.map((x) => x.customerId) } },
         ],
       };
   const customerFilter = {
@@ -502,7 +514,7 @@ export async function snapshot(
       : await (
           await collection("customers")
         )
-          .find(customerFilter)
+          .find(customerFilter, { projection: { pan: 0, passportNumber: 0 } })
           .sort({ name: 1 })
           .skip(customerIsPrimary ? (page - 1) * pageSize : 0)
           .limit(customerIsPrimary ? pageSize : 250)
@@ -527,9 +539,11 @@ export async function snapshot(
     .limit(taskIsPrimary ? pageSize : 100)
     .toArray() : [];
   const quoteIsPrimary = scope === "quotations";
+  const teamEnquiryIds = a.role === "sales" && quoteIsPrimary ? await (await collection("enquiries"))
+    .distinct("_id", { org: a.org, $or: [{ createdById: a.id }, { collaboratorIds: a.id }] }) : [];
   const quoteFilter = {
     org: a.org,
-    ...(a.role === "owner" ? {} : { assigneeId: a.id }),
+    ...(a.role === "owner" ? {} : teamEnquiryIds.length ? { $or: [{ assigneeId: a.id }, { enquiryId: { $in: teamEnquiryIds } }] } : { assigneeId: a.id }),
     ...(quoteIsPrimary && status ? { status } : {}),
     ...(quoteIsPrimary && assigneeId && a.role === "owner" ? { assigneeId } : {}),
     ...(quoteIsPrimary ? dateRange("updatedAt") : {}),
@@ -559,7 +573,7 @@ export async function snapshot(
       const related = await (await collection("enquiries")).find({
         org: a.org,
         _id: { $in: missingEnquiryIds },
-        ...(a.role === "owner" ? {} : { assigneeId: a.id }),
+        ...(a.role === "owner" ? {} : enquiryMembership(a.id)),
       }).toArray();
       enqs = [...enqs, ...related];
     }
@@ -570,7 +584,7 @@ export async function snapshot(
         org: a.org,
         _id: { $in: missingCustomerIds },
         ...(a.role === "owner" ? {} : { assigneeId: a.id }),
-      }).toArray();
+      }, { projection: { pan: 0, passportNumber: 0 } }).toArray();
       customers = [...customers, ...related];
     }
   }
@@ -583,12 +597,13 @@ export async function snapshot(
     ...phase3,
     ...phase4,
     quoteTemplates:
-      a.role === "owner" && needs("quotations")
+      a.role !== "operations" && needs("quotations")
         ? await (
             await collection("quoteTemplates")
           )
-            .find({ org: a.org })
+            .find({ org: a.org, active: true }, { projection: { name: 1, active: 1 } })
             .sort({ name: 1 })
+            .limit(100)
             .toArray()
         : [],
     staff: await (
@@ -728,7 +743,7 @@ export async function syncFollowUp(a: Actor, e: Row, s: ClientSession) {
   const tid = `follow:${e._id}`;
   if (["Lost", "Won"].includes(e.stage) || e.reviewNeeded) {
     await tasks.updateOne(
-      { _id: tid },
+      { _id: tid, org: a.org, status: { $in: ["To do", "In progress", "Waiting"] } },
       { $set: { status: "Cancelled" }, $inc: { version: 1 } },
       { session: s },
     );
@@ -741,21 +756,25 @@ export async function syncFollowUp(a: Actor, e: Row, s: ClientSession) {
     new Date(e.firstContactAt).getTime() +
       (settings?.contactHours || 4) * 3600000,
   ).toISOString();
-  const due = e.nextFollowUp || (!e.acknowledgedAt ? contactDue : null);
+  const due = e.nextFollowUp || (!e.firstContactCompletedAt ? contactDue : null);
   if (!due) {
     await tasks.updateOne(
-      { _id: tid },
+      { _id: tid, org: a.org, status: { $in: ["To do", "In progress", "Waiting"] } },
       { $set: { status: "Done" }, $inc: { version: 1 } },
       { session: s },
     );
     return;
   }
   const old = await tasks.findOne({ _id: tid }, { session: s });
+  if (!e.nextFollowUp && old?.status === "Done") return;
   const changed =
     !old ||
     old.dueAt !== due ||
     old.assigneeId !== e.assigneeId ||
     ["Done", "Cancelled"].includes(old.status);
+  const status = e.stage === "On hold" ? "Waiting" : changed || old?.status === "Waiting" ? "To do" : old?.status;
+  const title = e.nextFollowUp ? e.nextAction : "Contact customer";
+  if (old && !changed && old.status === status && old.title === title && old.customerId === e.customerId) return;
   await tasks.updateOne(
     { _id: tid },
     {
@@ -764,10 +783,9 @@ export async function syncFollowUp(a: Actor, e: Row, s: ClientSession) {
         assigneeId: e.assigneeId,
         enquiryId: e._id,
         customerId: e.customerId,
-        title: e.nextFollowUp ? e.nextAction : "Contact customer",
+        title,
         dueAt: due,
-        status:
-          e.stage === "On hold" ? "Waiting" : changed ? "To do" : old.status,
+        status,
         updatedAt: now(),
       },
       $setOnInsert: { createdAt: now() },
@@ -785,6 +803,23 @@ export async function syncFollowUp(a: Actor, e: Row, s: ClientSession) {
       s,
     );
 }
+export async function enquiryActivity(a: Actor, enquiryId: string) {
+  if (a.role === "operations") throw new Error("403: Not permitted.");
+  const enquiry = await (await collection("enquiries")).findOne({ _id: enquiryId, org: a.org });
+  if (!enquiry || !canWorkEnquiry(a, enquiry)) throw new Error("404: Enquiry not found.");
+  const [events, followUp, customer, quotes] = await Promise.all([
+    (await collection("activity")).find({ org: a.org, recordId: enquiryId }, { projection: { actor: 1, event: 1, createdAt: 1 } }).sort({ createdAt: -1, _id: -1 }).limit(30).toArray(),
+    (await collection("tasks")).findOne({ org: a.org, _id: `follow:${enquiryId}` }, { projection: { status: 1, title: 1, dueAt: 1 } }),
+    (await collection("customers")).findOne({ org: a.org, _id: enquiry.customerId }, { projection: { name: 1, phone: 1, email: 1 } }),
+    (await collection("quotes")).find({ org: a.org, enquiryId }, { projection: { quoteNumber: 1, quoteVersion: 1, status: 1, pdfStatus: 1 } }).sort({ updatedAt: -1 }).limit(12).toArray(),
+  ]);
+  const booking = await (await collection("bookings")).findOne(
+    { org: a.org, enquiryId }, { projection: { bookingNumber: 1, status: 1 }, sort: { createdAt: -1, _id: -1 } },
+  );
+  const safeEnquiry = booking && bookingCreationActions.includes(enquiry.nextAction) ? { ...enquiry, nextAction: "" } : enquiry;
+  return { enquiry: safeEnquiry, customer, events, followUp, quotes, booking, bookingNextAction: bookingNextAction(booking?.status) };
+}
+
 export async function saveEnquiry(
   a: Actor,
   input: unknown,
@@ -803,10 +838,15 @@ export async function saveEnquiry(
       ? await c.findOne({ _id: recordId, org: a.org }, { session: s })
       : null;
     if (recordId && !previous) throw new Error("404: Enquiry not found.");
-    if (previous && !canAccess(a, previous.assigneeId))
+    if (previous && !canWorkEnquiry(a, previous))
       throw new Error("403: Enquiry not assigned to you.");
-    if (a.role !== "owner" && p.assigneeId !== (previous?.assigneeId || a.id))
-      throw new Error("403: Only owner can reassign enquiries.");
+    const canHandoff = !previous || a.role === "owner" || previous.createdById === a.id;
+    const oldMembers: string[] = Array.isArray(previous?.collaboratorIds) ? previous.collaboratorIds : [];
+    const members = [...new Set(p.collaboratorIds ?? oldMembers)].filter((person) => person !== p.assigneeId);
+    if (!canHandoff && (p.assigneeId !== previous?.assigneeId || oldMembers.some((person) => !members.includes(person))))
+      throw new Error("403: Only the Owner or creator can change the lead or remove team members.");
+    if (previous?.reviewNeeded && a.role !== "owner")
+      throw new Error("403: Ask the Owner to review and activate this imported enquiry first.");
     if (
       ["Quote requested", "Quote sent", "Won"].includes(p.stage) &&
       p.stage !== previous?.stage
@@ -824,12 +864,24 @@ export async function saveEnquiry(
       throw new Error(
         "Use the quotation workflow to move an enquiry backwards after a quote exists.",
       );
-    await customerAllowed(a, p.customerId, s);
+    if (!previous || p.customerId !== previous.customerId) await customerAllowed(a, p.customerId, s, true);
     await assigned(a, p.assigneeId, s, true);
+    const added = members.filter((person) => !oldMembers.includes(person));
+    for (const person of added) await assigned(a, person, s, true);
+    const changedLead = previous?.assigneeId !== p.assigneeId;
+    if (logContact && p.nextFollowUp === previous?.nextFollowUp) {
+      p.nextFollowUp = "";
+      if (p.stage !== "On hold") p.nextAction = "";
+      else throw new Error("Choose a new follow-up date before logging this call on an enquiry on hold.");
+    }
     const eid = recordId || id();
     const e: Row = {
       ...previous,
       ...p,
+      collaboratorIds: members,
+      ...(previous ? {} : { createdById: a.id }),
+      ...(previous && changedLead ? { acknowledgedAt: null } : {}),
+      ...(logContact ? { firstContactCompletedAt: previous?.firstContactCompletedAt || now() } : {}),
       _id: eid,
       org: a.org,
       version: previous ? previous.version + 1 : 1,
@@ -843,18 +895,11 @@ export async function saveEnquiry(
       if (!r.matchedCount)
         throw new Error("409: Enquiry changed. Refresh before saving.");
     } else await c.insertOne(e, { session: s });
-    if (previous?.assigneeId !== e.assigneeId) {
-      await (
-        await collection("customers")
-      ).updateOne(
-        { _id: p.customerId, org: a.org },
-        { $set: { assigneeId: e.assigneeId } },
-        { session: s },
-      );
+    if (changedLead) {
       await (
         await collection("tasks")
       ).updateMany(
-        { enquiryId: eid, status: { $nin: ["Done", "Cancelled"] } },
+        { org: a.org, enquiryId: eid, _id: { $ne: `follow:${eid}` }, status: { $nin: ["Done", "Cancelled"] } },
         { $set: { assigneeId: e.assigneeId }, $inc: { version: 1 } },
         { session: s },
       );
@@ -884,16 +929,31 @@ export async function saveEnquiry(
       await (
         await collection("notifications")
       ).deleteMany(
-        { org: a.org, recordId: eid, recipient: { $ne: e.assigneeId } },
+        { org: a.org, recordId: eid, recipient: previous?.assigneeId || "" },
         { session: s },
       );
     }
     await syncFollowUp(a, e, s);
+    for (const person of added) await notify(a, person, `enquiry-team:${eid}:${e.version}:${person}`, "Added to an enquiry team", eid, s);
+    if (previous) {
+      const changes = [
+        ...(previous.stage !== e.stage ? [`Status: ${previous.stage} → ${e.stage}`] : []),
+        ...(changedLead ? ["Lead changed"] : []),
+        ...(added.length || oldMembers.some((person) => !members.includes(person)) ? ["Team updated"] : []),
+        ...(previous.nextFollowUp !== e.nextFollowUp ? [`Follow-up: ${previous.nextFollowUp || "not set"} → ${e.nextFollowUp || "cleared"}`] : []),
+        ...(previous.nextAction !== e.nextAction ? ["Next action changed"] : []),
+        ...(previous.customerId !== e.customerId ? ["Customer changed"] : []),
+        ...(["destination", "departure", "returnDate", "dateMode", "travelPreference", "adults", "childrenAges", "infants", "budget", "budgetBasis", "services", "hotelPreference", "rooms", "pickup", "dropoff", "specialRequirements"].some((field) => previous[field] !== e[field]) ? ["Trip details updated"] : []),
+        ...(previous.notes !== e.notes ? ["Notes updated"] : []),
+        ...(logContact ? [`Call: ${p.contactOutcome}`] : []),
+      ];
+      await audit(a, eid, changes.length ? changes.join(" · ") : "Enquiry updated", s);
+    }
     if (logContact) await (await collection("staffActivityEvents")).insertOne({
       _id: `contact:${eid}:${e.version}`, org: a.org, version: 1, staffId: a.id, kind: "contact",
       occurredAt: e.updatedAt, customerId: p.customerId, label: p.destination, outcome: p.contactOutcome,
     }, { session: s });
-    await audit(a, eid, previous ? "Enquiry updated" : "Enquiry created", s);
+    if (!previous) await audit(a, eid, "Enquiry created", s);
     return eid;
   });
 }
@@ -901,7 +961,7 @@ export async function acknowledge(a: Actor, eid: string, version: number) {
   return transact(async (s) => {
     const c = await collection("enquiries");
     const e = await c.findOne({ _id: eid, org: a.org }, { session: s });
-    if (!e || !canAccess(a, e.assigneeId))
+    if (!e || a.role === "operations" || !canAccess(a, e.assigneeId))
       throw new Error("403: Not permitted.");
     const r = await c.updateOne(
       { _id: eid, version },
@@ -963,6 +1023,7 @@ export async function saveTask(
           { _id: e._id },
           {
             $set: {
+              ...(p.status === "Done" ? { firstContactCompletedAt: e.firstContactCompletedAt || now() } : {}),
               nextFollowUp: ["Done", "Cancelled"].includes(p.status)
                 ? ""
                 : p.dueAt,
@@ -1140,12 +1201,8 @@ export async function staffAction(a: Actor, input: unknown) {
           .find({ org: a.org, operationsAssigneeIds: newId }, { session: s })
           .toArray();
         for (const booking of affected) {
-          const replacements = [
-            ...new Set(
-              (booking.operationsAssigneeIds || []).map((staffId: string) =>
-                staffId === newId ? p.replacementId : staffId,
-              ),
-            ),
+          const replaceAssignee = (ids: string[]) => [
+            ...new Set(ids.map((staffId) => staffId === newId ? p.replacementId : staffId)),
           ];
           await (
             await collection("bookings")
@@ -1153,7 +1210,10 @@ export async function staffAction(a: Actor, input: unknown) {
             { _id: booking._id },
             {
               $set: {
-                operationsAssigneeIds: replacements,
+                operationsAssigneeIds: replaceAssignee(booking.operationsAssigneeIds || []),
+                ...(booking.operationsReleaseAssigneeIds && {
+                  operationsReleaseAssigneeIds: replaceAssignee(booking.operationsReleaseAssigneeIds),
+                }),
                 updatedAt: now(),
               },
               $inc: { version: 1 },

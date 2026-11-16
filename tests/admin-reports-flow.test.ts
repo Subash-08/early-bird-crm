@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import type { Actor } from "../src/lib/domain";
+import ExcelJS from "exceljs";
+import { registerDates } from "../src/lib/customer-register";
 
 let replica: MongoMemoryReplSet;
 let db: typeof import("../src/server/db");
@@ -72,5 +74,41 @@ describe("administration completion and reports", () => {
     expect(csv).toContain("Pipeline");
     const xlsx = await reports.reportXlsx(ownerReport);
     expect(xlsx.byteLength).toBeGreaterThan(1000);
+  });
+
+  it("lists and streams CRM register data within each role and applied filter", async () => {
+    const register = await import("../src/server/customer-register");
+    const sales: Actor = { ...owner, id: "sales-2", role: "sales" };
+    const operations: Actor = { ...owner, id: "ops-2", role: "operations" };
+    const customers = await db.collection("customers");
+    await customers.insertMany([
+      { _id: "customer-only", org, version: 1, name: "Standalone Customer", assigneeId: "sales-2", createdAt: stamp, updatedAt: stamp },
+      { _id: "customer-other-org", org: "another-company", version: 1, name: "Hidden other agency", createdAt: stamp, updatedAt: stamp },
+    ]);
+    await (await db.collection("quotes")).updateOne({ _id: "quote" }, { $set: { enquiryId: "enquiry", quoteNumber: "EB-Q-TEST", quoteVersion: 1, "content.title": "Kerala plan", "content.internalNotes": "PRIVATE" } });
+    await (await db.collection("bookings")).updateOne({ _id: "booking" }, { $set: { enquiryId: "enquiry" } });
+    const filtered = await register.customerRegister(sales, { stage: "Won", status: "Confirmed", q: "Formula" });
+    expect(filtered).toMatchObject({ total: 1, rows: [{ customer: "=Formula Customer", stage: "Accepted", quoteTitle: "Kerala plan", bookingNumber: "EB-TEST" }] });
+    expect(JSON.stringify(filtered)).not.toContain("PRIVATE");
+    expect((await register.customerRegister(sales, {})).total).toBe(2);
+    expect((await register.customerRegister(owner, { stage: "No enquiry" })).rows.map((row) => row.customer)).toEqual(["Standalone Customer"]);
+    expect((await register.customerRegister({ ...sales, id: "unassigned" }, {})).total).toBe(0);
+    await expect(register.customerRegister(operations, {})).rejects.toThrow("403");
+    await expect(register.exportCustomerRegister(operations, {}, true, "csv")).rejects.toThrow("403");
+    await expect(register.customerRegister(sales, { from: "2027-01-03", to: "2027-01-01" })).rejects.toThrow("Start date");
+    expect(registerDates(1, new Date("2026-11-16T18:40:00Z"))).toEqual({ from: "2026-11-17", to: "2026-11-17" });
+
+    const csvParts: Buffer[] = [];
+    for await (const part of await register.exportCustomerRegister(sales, { stage: "Won" }, false, "csv")) csvParts.push(Buffer.from(part));
+    const csv = Buffer.concat(csvParts).toString("utf8");
+    expect(csv).toContain("'=Formula Customer");
+    expect(csv).not.toContain("Standalone Customer");
+    const xlsxParts: Buffer[] = [];
+    for await (const part of await register.exportCustomerRegister(sales, { stage: "Won" }, true, "xlsx")) xlsxParts.push(Buffer.from(part));
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.read((await import("node:stream")).Readable.from(xlsxParts));
+    const sheet = workbook.getWorksheet("Customer register");
+    expect(sheet?.rowCount).toBe(3);
+    expect([sheet?.getCell("A2").value, sheet?.getCell("A3").value]).toContain("Standalone Customer");
   });
 });

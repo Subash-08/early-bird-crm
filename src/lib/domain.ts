@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
+import { panNumber, passportNumber } from "./identity-numbers";
 export const roles = ["owner", "sales", "operations"] as const;
 export type Role = (typeof roles)[number];
 export type Actor = {
@@ -45,6 +46,8 @@ export const customerSchema = z
     language: text,
     address: text,
     notes: text,
+    pan: panNumber,
+    passportNumber,
     duplicateConfirmed: z.boolean().default(false),
     reviewNeeded: z.boolean().default(false),
   })
@@ -55,6 +58,7 @@ export const enquirySchema = z
     destination: text,
     source: z.enum(sources),
     assigneeId: z.string().min(1),
+    collaboratorIds: z.array(z.string().min(1).max(160)).max(20).optional(),
     stage: z.enum(stages).default("New"),
     firstContactAt: z.iso.datetime(),
     dateMode: z
@@ -120,13 +124,22 @@ export const enquirySchema = z
   });
 export function normalizePhone(phone: string) {
   if (!phone) return "";
-  const p = parsePhoneNumberFromString(phone);
-  if (!p?.isValid() || !phone.startsWith("+"))
-    throw new Error("Enter a valid phone with country code, for example +91.");
+  const p = parsePhoneNumberFromString(phone, { defaultCountry: "IN", extract: false });
+  if (!p?.isValid())
+    throw new Error("Enter a valid phone number. Include a country code only for numbers outside India.");
   return p.number;
 }
 export function canAccess(actor: Actor, assigneeId: string) {
   return actor.role === "owner" || actor.id === assigneeId;
+}
+export function canWorkEnquiry(actor: Actor, enquiry: Record<string, unknown>) {
+  return actor.role === "owner" || (actor.role === "sales" &&
+    (enquiry.assigneeId === actor.id || enquiry.createdById === actor.id ||
+      (Array.isArray(enquiry.collaboratorIds) && enquiry.collaboratorIds.includes(actor.id))));
+}
+
+export function enquiryMembership(id: string) {
+  return { $or: [{ assigneeId: id }, { createdById: id }, { collaboratorIds: id }] };
 }
 export function safeCell(value: unknown) {
   const s = String(value ?? "");

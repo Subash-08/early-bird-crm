@@ -14,7 +14,7 @@ import { effectiveEntries } from "@/lib/settlement-domain";
 import { calculateInvoice, defaultInvoiceTemplate } from "@/lib/invoice-domain";
 import { collection, type Row } from "./db";
 import { audit, notify, owner, transact } from "./crm";
-import { buildFinancialPdf } from "./financial-pdf";
+import { buildFinancialPdf, invoicePrintSnapshot } from "./financial-pdf";
 import { getActiveInvoiceTemplate, nextInvoiceNumber } from "./invoices";
 
 const now = () => new Date().toISOString();
@@ -114,6 +114,7 @@ export async function convertAcceptedQuote(a: Actor, input: unknown) {
     const bookingId = id();
     const bookingNumber = await nextNumber("BK", a, s);
     const totalMinor = Number(selected.totalMinor || 0);
+    const paymentTracking = quote.acceptedSnapshot.paymentHandledInBooking !== true;
     const requiredAdvanceMinor = Number(
       quote.acceptedSnapshot.content.advanceAmountMinor || 0,
     );
@@ -142,14 +143,15 @@ export async function convertAcceptedQuote(a: Actor, input: unknown) {
         customerId: quote.customerId,
         salesAssigneeId: quote.assigneeId,
         ownerId: quote.approvedById,
-        status: "Awaiting advance",
+        status: paymentTracking ? "Awaiting advance" : "Ready for coordination",
+        paymentTracking,
         currency: quote.acceptedSnapshot.content.currency,
         totalMinor,
         requiredAdvanceMinor,
         verifiedPaidMinor: 0,
-        outstandingMinor: totalMinor,
+        outstandingMinor: paymentTracking ? totalMinor : 0,
         unappliedCreditMinor: 0,
-        paymentStatus: "Unpaid",
+        paymentStatus: paymentTracking ? "Unpaid" : "Not tracked",
         advanceDueAt: "",
         balanceDueAt: "",
         serviceStart: quote.acceptedSnapshot.content.startDate || "",
@@ -211,7 +213,7 @@ export async function convertAcceptedQuote(a: Actor, input: unknown) {
             id: id(),
             kind: "Charge",
             hsnCode: "998552",
-            description: `${selected.name} - ${quote.acceptedSnapshot.content.title}`,
+            description: quote.acceptedSnapshot.content.title || "Travel package",
             quantity: 1,
             unitPrice: totalMinor / 100,
             unitPriceMinor: totalMinor,
@@ -249,8 +251,8 @@ export async function convertAcceptedQuote(a: Actor, input: unknown) {
     for (const person of owners) {
       await upsertTask(
         a,
-        `booking:review:${bookingId}:${person._id}`,
-        "Review new booking and issue invoice",
+        `booking:${paymentTracking ? "review" : "release"}:${bookingId}:${person._id}`,
+        paymentTracking ? "Review new booking and issue invoice" : "Review new booking and start coordination",
         person._id,
         new Date(Date.now() + 24 * 3600000).toISOString(),
         bookingId,
@@ -305,10 +307,12 @@ export async function saveBookingDetails(a: Actor, input: unknown) {
             stateCode: details.buyerStateCode,
           },
           travellers: details.travellers,
-          advanceDueAt: details.advanceDueAt,
-          balanceDueAt: details.balanceDueAt,
+          ...(booking.paymentTracking !== false ? {
+            advanceDueAt: details.advanceDueAt,
+            balanceDueAt: details.balanceDueAt,
+            paymentNote: details.paymentNote,
+          } : {}),
           coordinatorNotes: details.coordinatorNotes,
-          paymentNote: details.paymentNote,
           updatedAt: now(),
         },
         $inc: { version: 1 },
@@ -404,7 +408,7 @@ export async function issueInvoice(a: Actor, input: unknown) {
       tcsRate: Number(invoice.tcsRate || 0),
       placeOfSupply: invoice.placeOfSupply || booking.payer?.placeOfSupply || "",
       buyerStateCode: invoice.buyerStateCode || booking.payer?.stateCode || "",
-      template: structuredClone(template),
+      template: { ...structuredClone(template), showPaymentSummary: booking.paymentTracking !== false && template.showPaymentSummary },
       templateId: template._id,
       templateVersion: template.versionNumber || 0,
       copyLabels: invoice.copyLabels || template.copyLabels,
@@ -423,7 +427,7 @@ export async function issueInvoice(a: Actor, input: unknown) {
       issuedAt: now(),
     };
     const documentId = id();
-    const bytes = await buildFinancialPdf(snapshot);
+    const bytes = await buildFinancialPdf(invoicePrintSnapshot(snapshot, booking.agreementSnapshot));
     await (
       await collection("financeDocuments")
     ).insertOne(
@@ -434,6 +438,7 @@ export async function issueInvoice(a: Actor, input: unknown) {
         bookingId: booking._id,
         kind: "Invoice",
         number: invoiceNumber,
+        layoutVersion: 3,
         mimeType: "application/pdf",
         bytes: new Binary(Buffer.from(bytes)),
         createdAt: now(),
@@ -500,6 +505,7 @@ export async function submitPayment(a: Actor, input: unknown) {
   const p = paymentSubmissionSchema.parse(input);
   return transact(async (s) => {
     const booking = await bookingAccess(a, p.bookingId, s);
+    if (booking.paymentTracking === false) throw new Error("Payments are not tracked for this booking.");
     const evidence = p.evidenceBase64
       ? Buffer.from(p.evidenceBase64, "base64")
       : null;
@@ -890,29 +896,20 @@ export async function releaseOperations(a: Actor, input: unknown) {
     const booking = await bookingAccess(a, p.bookingId, s);
     if (booking.operationsReleased) return booking._id;
     if (booking.status === "Cancelled") throw new Error("A cancelled booking cannot be released to Operations.");
-    const invoice = await (
-      await collection("invoices")
-    ).findOne(
-      { bookingId: booking._id, org: a.org, status: "Issued" },
-      { session: s },
-    );
-    if (!invoice)
-      throw new Error(
-        "Issue the customer invoice before releasing operations.",
+    if (booking.paymentTracking !== false) {
+      const invoice = await (await collection("invoices")).findOne(
+        { bookingId: booking._id, org: a.org, status: "Issued" },
+        { session: s },
       );
-    const advanceMet =
-      booking.verifiedPaidMinor >= booking.requiredAdvanceMinor;
-    if (
-      (!advanceMet || booking.requiredAdvanceMinor === 0) &&
-      !p.overrideReason
-    )
-      throw new Error(
-        "Add the Owner's release reason when advance is insufficient or zero.",
-      );
+      if (!invoice) throw new Error("Issue the customer invoice before releasing operations.");
+      const advanceMet = booking.verifiedPaidMinor >= booking.requiredAdvanceMinor;
+      if ((!advanceMet || booking.requiredAdvanceMinor === 0) && !p.overrideReason)
+        throw new Error("Add the Owner's release reason when advance is insufficient or zero.");
+    }
     const uniqueAssignees = [...new Set(p.operationsAssigneeIds)];
-    const people = await (
-      await collection("staff")
-    )
+    const direct = p.coordinationMode === "direct";
+    const staff = await collection("staff");
+    const people = direct ? [] : await staff
       .find(
         {
           _id: { $in: uniqueAssignees },
@@ -925,11 +922,17 @@ export async function releaseOperations(a: Actor, input: unknown) {
       .toArray();
     if (people.length !== uniqueAssignees.length)
       throw new Error("Choose only active Operations staff.");
+    const directLead = direct ? await staff.findOne(
+      { _id: booking.salesAssigneeId, org: a.org, role: { $in: ["owner", "sales"] }, status: "active" },
+      { session: s },
+    ) : null;
     const checklist = serviceChecklist(booking);
-    if (!checklist.length)
-      throw new Error(
-        "The accepted quotation has no agency service to release.",
-      );
+    if (!checklist.length) {
+      if (!direct) throw new Error("The accepted quotation has no agency service to release.");
+      checklist.push({
+        id: id(), label: "Review customer travel details", status: "Pending", confirmationReference: "",
+      });
+    }
     const result = await (
       await collection("bookings")
     ).updateOne(
@@ -940,7 +943,9 @@ export async function releaseOperations(a: Actor, input: unknown) {
           operationsReleasedAt: now(),
           operationsReleasedById: a.id,
           operationsReleaseReason: p.overrideReason,
+          operationsCoordinationMode: p.coordinationMode,
           operationsAssigneeIds: uniqueAssignees,
+          operationsReleaseAssigneeIds: uniqueAssignees,
           operationsChecklist: checklist,
           status: "Pending confirmation",
           updatedAt: now(),
@@ -952,13 +957,15 @@ export async function releaseOperations(a: Actor, input: unknown) {
     if (!result.matchedCount)
       throw new Error("409: Booking changed. Refresh before release.");
     for (let index = 0; index < checklist.length; index++) {
-      const person = people[index % people.length];
+      const assigneeId = direct
+        ? (directLead?._id ?? a.id)
+        : people[index % people.length]._id;
       const item = checklist[index];
       await upsertTask(
         a,
         `booking:ops:${booking._id}:${item.id}`,
         `${booking.bookingNumber}: ${item.label}`,
-        person._id,
+        assigneeId,
         booking.serviceStart
           ? new Date(`${booking.serviceStart}T09:00:00+05:30`).toISOString()
           : new Date(Date.now() + 24 * 3600000).toISOString(),
@@ -967,7 +974,7 @@ export async function releaseOperations(a: Actor, input: unknown) {
       );
       await notify(
         a,
-        person._id,
+        assigneeId,
         `booking:ops:${booking._id}:${item.id}`,
         `New booking service assigned: ${item.label}`,
         booking._id,
@@ -983,23 +990,23 @@ export async function releaseOperations(a: Actor, input: unknown) {
         status: { $nin: ["Done", "Cancelled"] },
       },
       {
-        $set: { status: "Done", note: "Operations assigned", updatedAt: now() },
+        $set: { status: "Done", note: direct ? "Agency coordination started" : "Operations assigned", updatedAt: now() },
         $inc: { version: 1 },
       },
       { session: s },
     );
     await notify(
       a,
-      booking.salesAssigneeId,
+      direct ? (directLead?._id ?? a.id) : booking.salesAssigneeId,
       `booking:released:${booking._id}`,
-      "Booking released to Operations",
+      direct ? "Booking ready for agency coordination" : "Booking released to Operations",
       booking._id,
       s,
     );
     await audit(
       a,
       booking._id,
-      `Operations released to ${people.map((person) => person.name).join(", ")}${p.overrideReason ? ` - Owner reason: ${p.overrideReason}` : ""}`,
+      `${direct ? `Agency coordination started with ${directLead?.name ?? a.name}` : `Operations released to ${people.map((person) => person.name).join(", ")}`}${p.overrideReason ? ` - Owner reason: ${p.overrideReason}` : ""}`,
       s,
     );
     return booking._id;
@@ -1119,6 +1126,7 @@ export async function amendAdvance(a: Actor, input: unknown) {
     .parse(input);
   return transact(async (s) => {
     const booking = await bookingAccess(a, p.bookingId, s);
+    if (booking.paymentTracking === false) throw new Error("Payments are not tracked for this booking.");
     const amendment = {
       id: id(),
       previousMinor: booking.requiredAdvanceMinor,

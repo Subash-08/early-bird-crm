@@ -1,5 +1,29 @@
-import { actor } from '@/server/auth';
-import { collection } from '@/server/db';
-import { canAccess } from '@/lib/domain';
-export const runtime='nodejs';export const dynamic='force-dynamic';
-export async function GET(req:Request,{params}:{params:Promise<{id:string}>}){try{const a=await actor(req.headers);if(a.role==='operations')return Response.json({error:'Not permitted.'},{status:403});const {id}=await params,q=await (await collection('quotes')).findOne({_id:id,org:a.org});if(!q||!canAccess(a,q.assigneeId)||!q.pdfDocumentId)return Response.json({error:'Document not found.'},{status:404});const d=await (await collection('documents')).findOne({_id:q.pdfDocumentId,org:a.org,quoteId:q._id});if(!d)return Response.json({error:'Document not found.'},{status:404});const bytes=d.data?.buffer?Buffer.from(d.data.buffer):Buffer.from(d.data||[]);return new Response(bytes,{headers:{'Content-Type':'application/pdf','Content-Disposition':`inline; filename="${String(d.filename).replace(/["\r\n]/g,'')}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});}catch(e){const message=e instanceof Error?e.message:'Request failed';const status=Number(message.match(/^(401|403|404):/)?.[1]||400);return Response.json({error:message},{status});}}
+import { actor } from "@/server/auth";
+import { collection } from "@/server/db";
+import { brandedQuoteSnapshot, buildQuotePdf } from "@/server/quote-pdf";
+import { quoteAccess } from "@/server/quotes";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
+  try {
+    const user = await actor(request.headers);
+    const { id } = await params;
+    const quote = await quoteAccess(user, id);
+    if (!quote.snapshot || !quote.pdfDocumentId || quote.pdfStatus !== "Ready")
+      return Response.json({ error: "Quotation PDF not available." }, { status: 404, headers });
+    const document = await (await collection("documents")).findOne({ _id: quote.pdfDocumentId, org: user.org, quoteId: quote._id });
+    if (!document) return Response.json({ error: "Quotation PDF not available." }, { status: 404, headers });
+    const bytes = document.layoutVersion === 2 && document.data
+      ? new Uint8Array(document.data.buffer)
+      : await buildQuotePdf(await brandedQuoteSnapshot(quote.snapshot, user.org));
+    const filename = `${quote.quoteNumber}-v${quote.quoteVersion}.pdf`.replace(/[^A-Za-z0-9._-]/g, "-");
+    return new Response(Buffer.from(bytes), { headers: { ...headers, "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="${filename}"` } });
+  } catch (error) {
+    const status = error instanceof Error ? Number(error.message.match(/^(401|403|404):/)?.[1] || 500) : 500;
+    return Response.json({ error: status === 500 ? "Could not generate the quotation. Try again." : "Quotation not available." }, { status, headers });
+  }
+}
+

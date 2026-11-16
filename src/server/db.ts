@@ -46,10 +46,15 @@ export async function indexes() {
     d.collection("staffActivityEvents").createIndex({ org: 1, staffId: 1, occurredAt: -1 }),
     d.collection("tasks").createIndex({ org: 1, customerId: 1, dueAt: -1 }),
     d.collection("enquiries").createIndex({ org: 1, assigneeId: 1, stage: 1 }),
+    d.collection("enquiries").createIndex({ org: 1, createdById: 1, updatedAt: -1 }),
+    d.collection("enquiries").createIndex({ org: 1, collaboratorIds: 1, updatedAt: -1 }),
+    d.collection("activity").createIndex({ org: 1, recordId: 1, createdAt: -1, _id: -1 }),
     d.collection("enquiries").createIndex({ org: 1, createdAt: -1, source: 1, stage: 1 }),
     d.collection("enquiries").createIndex({ org: 1, updatedAt: -1 }),
     d.collection("enquiries").createIndex({ org: 1, stage: 1, updatedAt: -1 }),
     d.collection("enquiries").createIndex({ org: 1, customerId: 1, updatedAt: -1 }),
+    d.collection("quoteTemplates").createIndex({ org: 1, name: 1, _id: 1 }),
+    d.collection("quoteTemplates").createIndex({ org: 1, active: 1, name: 1 }),
     d.collection("customers").createIndex({ org: 1, phone: 1 }),
     d.collection("customers").createIndex({ org: 1, name: 1 }),
     d.collection("customers").createIndex({ org: 1, email: 1 }),
@@ -97,6 +102,7 @@ export async function indexes() {
     d.collection("bookings").createIndex({ org: 1, updatedAt: -1 }),
     d.collection("bookings").createIndex({ org: 1, status: 1, serviceStart: 1, updatedAt: -1 }),
     d.collection("bookings").createIndex({ org: 1, customerId: 1, updatedAt: -1 }),
+    d.collection("bookings").createIndex({ org: 1, enquiryId: 1, createdAt: -1, _id: -1 }),
     d
       .collection("payments")
       .createIndex({ org: 1, bookingId: 1, createdAt: -1 }),

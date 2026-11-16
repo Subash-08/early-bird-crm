@@ -110,6 +110,58 @@ async function notifyCoordinators(
     await notify(a, recipient, `${key}:${recipient}`, message, booking._id, s);
 }
 
+export async function copyPackageServices(a: Actor, input: unknown) {
+  coordinator(a);
+  const { bookingId } = z.object({ bookingId: z.string().min(1) }).strict().parse(input);
+  return transact(async (session) => {
+    const booking = await bookingAccess(a, bookingId, session);
+    if (!booking.operationsReleased || ["Cancelled", "Trip completed"].includes(booking.status))
+      throw new Error("Open a booking ready for coordination before copying services.");
+    const content = booking.agreementSnapshot?.content;
+    const selectedOption = booking.agreementSnapshot?.selectedOptionId;
+    const applies = (item: Row) => !item.optionId || item.optionId === selectedOption;
+    const serviceTime = (date: string, time: string, zone = "Asia/Kolkata") =>
+      date && /^\d{2}:\d{2}$/.test(time) && zone === "Asia/Kolkata" &&
+      Number.isFinite(Date.parse(`${date}T${time}:00+05:30`))
+        ? new Date(`${date}T${time}:00+05:30`).toISOString() : "";
+    const services: { key: string; type: string; title: string; startAt: string; endAt: string; location: string; details: string; responsibility: string }[] = [];
+    for (const [index, item] of (content?.stays || []).entries() as Iterable<[number, Row]>) {
+      if (!applies(item) || !item.property) continue;
+      services.push({ key: `stay:${index}`, type: "Hotel", title: item.property, location: item.city || "",
+        startAt: "", endAt: "", responsibility: "Agency arranged",
+        details: [item.checkIn && `Check-in ${item.checkIn}`, item.checkOut && `Check-out ${item.checkOut}`,
+          item.rooms && `${item.rooms} room(s)`, item.roomType, item.occupancy, item.mealPlan, item.extraBed, item.notes].filter(Boolean).join(" · ") });
+    }
+    for (const [index, item] of (content?.transport || []).entries() as Iterable<[number, Row]>) {
+      if (!applies(item) || item.responsibility === "Not required") continue;
+      const route = [item.from, item.to].filter(Boolean).join(" → ");
+      services.push({ key: `transport:${index}`, type: item.mode === "Ferry / boat" ? "Ferry" : item.mode,
+        title: [item.mode, route].filter(Boolean).join(" · "), location: route, endAt: "",
+        startAt: serviceTime(item.date, item.time, item.timeZone || "Asia/Kolkata"),
+        responsibility: item.responsibility === "Third-party arranged" ? "Third party" : item.responsibility,
+        details: [item.provider, item.date, item.time, item.timeZone, item.details].filter(Boolean).join(" · ") });
+    }
+    if (!services.length) throw new Error("This accepted option has no stays or transport to copy.");
+    const timestamp = now();
+    const arrangements = await collection("arrangements");
+    const result = await arrangements.bulkWrite(services.map(({ key, ...service }) => ({
+      updateOne: {
+        filter: { _id: `${bookingId}:package:${key}`, org: a.org, bookingId },
+        update: { $setOnInsert: {
+          ...service, title: service.title.slice(0, 220), location: service.location.slice(0, 500),
+          details: service.details.slice(0, 3000), supplierId: "", confirmationStatus: "Draft",
+          confirmationReference: "", holdUntil: "", dueAt: "", cost: "0", costMinor: 0,
+          currency: booking.currency, packageSource: key, version: 1, createdAt: timestamp, updatedAt: timestamp,
+        } },
+        upsert: true,
+      },
+    })), { session });
+    if (result.upsertedCount)
+      await audit(a, bookingId, `Copied ${result.upsertedCount} draft services from the accepted package`, session);
+    return result.upsertedCount;
+  });
+}
+
 export async function initializeOperations(a: Actor, input: unknown) {
   coordinator(a);
   const p = z
@@ -289,6 +341,7 @@ export async function saveArrangement(a: Actor, input: unknown) {
   const data = arrangementSchema.parse(p.data);
   return transact(async (s) => {
     const booking = await bookingAccess(a, data.bookingId, s);
+    if (booking.paymentTracking === false && data.costMinor) throw new Error("Supplier costs are not tracked for this booking.");
     if (booking.status === "Cancelled") throw new Error("Do not add or change services on a cancelled booking.");
     if (!booking.operationsReleased)
       throw new Error("Release the booking before arranging services.");
@@ -407,6 +460,8 @@ export async function saveTripSegment(a: Actor, input: unknown) {
     if (booking.status === "Cancelled") throw new Error("Do not assign travel on a cancelled booking.");
     if (!booking.operationsReleased)
       throw new Error("Release the booking before assigning trips.");
+    if (booking.operationsCoordinationMode === "direct" && (data.driverId || data.vehicleId))
+      throw new Error("Use a supplier or customer car for an agency-coordinated booking.");
     if (data.driverId) {
       await activeStaff(a, data.driverId, "operations", s);
       await (await collection("staff")).updateOne({ _id: data.driverId, org: a.org }, { $inc: { scheduleRevision: 1 } }, { session: s });
@@ -434,6 +489,9 @@ export async function saveTripSegment(a: Actor, input: unknown) {
       );
       if (!arrangement)
         throw new Error("Linked arrangement is not part of this booking.");
+      if (data.mode === "Car" && data.carHandling === "external"
+        && (arrangement.type !== "Car" || ["Unavailable", "Cancelled"].includes(arrangement.confirmationStatus)))
+        throw new Error("Link an available car service for this booking.");
     }
     const segmentId = p.id || id();
     const conflict = await overlappingSegment(a, data, segmentId, s);
@@ -514,7 +572,8 @@ export async function saveTripSegment(a: Actor, input: unknown) {
     }
     if (old?.driverId && old.driverId !== data.driverId) {
       const remaining = await (await collection("tripSegments")).countDocuments({ org: a.org, bookingId: booking._id, driverId: old.driverId, status: { $nin: ["Cancelled", "Completed"] } }, { session: s });
-      if (!remaining) await (await collection("bookings")).updateOne({ _id: booking._id, org: a.org }, { $pull: { operationsAssigneeIds: old.driverId }, $inc: { version: 1 } }, { session: s });
+      if (!remaining && !booking.operationsReleaseAssigneeIds?.includes(old.driverId))
+        await (await collection("bookings")).updateOne({ _id: booking._id, org: a.org }, { $pull: { operationsAssigneeIds: old.driverId }, $inc: { version: 1 } }, { session: s });
       if (!data.driverId) await (await collection("tasks")).updateOne({ _id: `trip:${segmentId}`, org: a.org }, { $set: { status: "Cancelled", note: "Driver reassigned" }, $inc: { version: 1 } }, { session: s });
     }
     await audit(
@@ -750,6 +809,7 @@ export async function submitOperationsRequest(a: Actor, input: unknown) {
     throw new Error("Enter an expense amount greater than zero.");
   return transact(async (s) => {
     const booking = await bookingAccess(a, p.bookingId, s);
+    if (booking.paymentTracking === false && p.type === "Expense") throw new Error("Expenses are not tracked for this booking.");
     const segment = await (
       await collection("tripSegments")
     ).findOne(
@@ -932,6 +992,7 @@ export async function reportCollection(a: Actor, input: unknown) {
   const p = collectionReportSchema.parse(input);
   return transact(async (s) => {
     const booking = await bookingAccess(a, p.bookingId, s);
+    if (booking.paymentTracking === false) throw new Error("Payments are not tracked for this booking.");
     if (p.currency !== booking.currency)
       throw new Error(
         "Collected currency must match the booking currency for this initial workflow.",
@@ -1410,6 +1471,8 @@ export async function completeTrip(a: Actor, input: unknown) {
   return transact(async (s) => {
     const booking = await bookingAccess(a, p.bookingId, s);
     if (booking.status === "Cancelled") throw new Error("This booking was cancelled and cannot be completed as a trip.");
+    if (!booking.operationsReleased) throw new Error("Start coordination before completing this trip.");
+    if (booking.status === "Trip completed") return booking._id;
     const [arrangements, segments, readiness, incidents] = await Promise.all([
       (await collection("arrangements"))
         .find(
@@ -1454,7 +1517,7 @@ export async function completeTrip(a: Actor, input: unknown) {
           status: "Trip completed",
           tripCompletedAt: now(),
           tripCompletedById: a.id,
-          settlementOutstanding: true,
+          settlementOutstanding: booking.paymentTracking !== false,
           updatedAt: now(),
         },
         $inc: { version: 1 },

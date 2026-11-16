@@ -2,9 +2,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
+import { canOpenWorkspace, workspaceViews as routeViews, type View } from "@/lib/workspace-access";
 import { authClient } from "@/lib/auth-client";
 import { Login } from "./login";
 import { CustomerDetailPage } from "./customer-detail-page";
+import { formatFollowUpEvent, indiaInput, indiaIso, shortIndiaTime } from "@/lib/workspace-time";
+import { activeQuoteStatuses, quoteRequestBlock } from "@/lib/quote-request-state";
 import {
   LayoutDashboard,
   Users,
@@ -38,9 +41,12 @@ import {
   BarChart3,
   Download,
   ReceiptText,
+  Wallet,
 } from "lucide-react";
 const RouteLoading = () => <section className="panel route-loading"><RefreshCw className="spin" /> Loading this workspace…</section>;
 const Quotations = dynamic(() => import("./quotations").then((module) => module.Quotations), { loading: RouteLoading });
+const LinkedQuote = dynamic(() => import("./quotations").then((module) => module.LinkedQuote), { loading: RouteLoading });
+const PackageTemplates = dynamic(() => import("./quotations").then((module) => module.PackageTemplates), { loading: RouteLoading });
 const Bookings = dynamic(() => import("./bookings").then((module) => module.Bookings), { loading: RouteLoading });
 const Operations = dynamic(() => import("./operations").then((module) => module.Operations), { loading: RouteLoading });
 const Settlements = dynamic(() => import("./settlements").then((module) => module.Settlements), { loading: RouteLoading });
@@ -83,21 +89,7 @@ type Snap = {
 };
 type ListFilters = { page: number; pageSize: number; status: string; assigneeId: string; from: string; to: string };
 const defaultListFilters: ListFilters = { page: 1, pageSize: 20, status: "", assigneeId: "", from: "", to: "" };
-export type View =
-  | "dashboard"
-  | "enquiries"
-  | "customers"
-  | "quotations"
-  | "bookings"
-  | "operations"
-  | "settlements"
-  | "tasks"
-  | "notifications"
-  | "reports"
-  | "imports"
-  | "invoice-settings"
-  | "staff"
-  | "attendance";
+export type { View } from "@/lib/workspace-access";
 const emptyCustomer = {
   name: "",
   phone: "",
@@ -108,16 +100,9 @@ const emptyCustomer = {
   duplicateConfirmed: false,
   reviewNeeded: false,
 };
-const iso = (value = "") => (value ? new Date(value).toISOString() : "");
-const local = (value = "") =>
-  value ? new Date(value).toISOString().slice(0, 16) : "";
-const moneyDate = (v: string) =>
-  v
-    ? new Intl.DateTimeFormat("en-IN", {
-        dateStyle: "medium",
-        timeStyle: "short",
-      }).format(new Date(v))
-    : "Not scheduled";
+const iso = indiaIso;
+const local = indiaInput;
+const moneyDate = shortIndiaTime;
 async function api(action: string, data: any = {}, more: any = {}) {
   const r = await fetch("/api/crm", {
     method: "POST",
@@ -129,11 +114,21 @@ async function api(action: string, data: any = {}, more: any = {}) {
   return j.result;
 }
 
-const routeViews: View[] = ["dashboard", "enquiries", "customers", "quotations", "bookings", "operations", "settlements", "tasks", "notifications", "reports", "imports", "invoice-settings", "staff", "attendance"];
+const navGroups: { title: string; views: View[] }[] = [
+  { title: "Travel desk", views: ["dashboard", "enquiries", "customers", "quotations", "bookings", "operations", "settlements"] },
+  { title: "Daily work", views: ["tasks", "attendance", "notifications", "reports"] },
+  { title: "Agency setup", views: ["package-templates", "invoice-settings", "staff", "imports"] },
+];
 
 export function CrmApp({ initialView = "dashboard", customerId = "" }: { initialView?: View; customerId?: string }) {
   const router = useRouter();
   const pathname = usePathname();
+  const enquirySegment = pathname.match(/^\/enquiries\/([^/]+)\/?$/)?.[1];
+  let enquiryId = enquirySegment || "";
+  try { enquiryId = decodeURIComponent(enquiryId); } catch { /* Show the not-found state. */ }
+  const quoteSegment = pathname.match(/^\/quotations\/([^/]+)\/?$/)?.[1];
+  let quoteId = quoteSegment || "";
+  try { quoteId = decodeURIComponent(quoteId); } catch { /* Show the not-found state. */ }
   const activitySegment = pathname.match(/^\/staff\/activity\/([^/]+)\/?$/)?.[1];
   let activityMemberId = activitySegment || "";
   if (activitySegment) {
@@ -152,11 +147,12 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
     [debouncedSearch, setDebouncedSearch] = useState(""),
     [listFilters, setListFilters] = useState<ListFilters>(defaultListFilters),
     [activeCustomerId, setActiveCustomerId] = useState(customerId);
+  const scope = activeCustomerId || quoteId || view === "package-templates" ? "shell" : view;
   const load = useCallback(async () => {
     const currentRequest = ++requestId.current;
     try {
       const params = new URLSearchParams({
-        scope: activeCustomerId ? "shell" : view,
+        scope,
         page: String(listFilters.page),
         pageSize: String(listFilters.pageSize),
         q: debouncedSearch,
@@ -189,7 +185,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
     } finally {
       if (currentRequest === requestId.current) setLoading(false);
     }
-  }, [activeCustomerId, debouncedSearch, listFilters, router, view]);
+  }, [debouncedSearch, listFilters, router, scope, view]);
   useEffect(() => {
     if (search.trim() === debouncedSearch) return;
     const timer = window.setTimeout(() => {
@@ -249,12 +245,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
   }, [moreOpen]);
   useEffect(() => {
     if (!snap) return;
-    const permitted = snap.actor.role === "owner"
-      ? routeViews
-      : snap.actor.role === "operations"
-        ? (["dashboard", "operations", "tasks", "notifications", "reports", "attendance"] as View[])
-        : routeViews.filter((item) => !["imports", "invoice-settings", "staff"].includes(item));
-    if (!permitted.includes(view)) {
+    if (!canOpenWorkspace(snap.actor.role, view)) {
       setView("dashboard");
       router.replace("/dashboard");
     }
@@ -288,41 +279,34 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
       </div>
     );
   if (!snap) return <Login />;
-  const role = snap.actor.role,
-    nav = [
-      ["dashboard", "Today", LayoutDashboard],
-      ...(role === "operations"
-        ? [["operations", "My trips", Route]]
-        : [
+  const role = snap.actor.role;
+  const nav = ([
+      ["dashboard", "Overview", LayoutDashboard],
             ["enquiries", "Enquiries", Inbox],
             ["customers", "Customers", Users],
             ["quotations", "Quotations", FileSpreadsheet],
             ["bookings", "Bookings", ClipboardCheck],
-            ["operations", "Operations", Route],
-            ["settlements", "Money & changes", ClipboardCheck],
-          ]),
+            ["operations", role === "operations" ? "My trips" : "Operations", Route],
+            ["settlements", "Booking changes", Wallet],
       ["tasks", "Tasks", CheckSquare],
       ["attendance", "Attendance", Clock3],
       ["notifications", "Notifications", Bell],
       ["reports", "Reports", BarChart3],
-      ...(role === "owner"
-        ? [
             ["imports", "Import data", Upload],
             ["invoice-settings", "Invoice template", ReceiptText],
+            ["package-templates", "Package templates", Copy],
             ["staff", "Team & setup", UserCog],
-          ]
-        : []),
-    ] as [View, string, any][];
+    ] as [View, string, any][]).filter(([id]) => canOpenWorkspace(role, id));
   const unread = Number(snap.notificationUnread ?? snap.notifications.filter((x) => !x.read).length);
   const mobilePrimary = (role === "operations"
     ? [
-        ["dashboard", "Today", LayoutDashboard],
+        ["dashboard", "Overview", LayoutDashboard],
         ["operations", "Trips", Route],
         ["tasks", "Tasks", CheckSquare],
         ["notifications", "Alerts", Bell],
       ]
     : [
-        ["dashboard", "Today", LayoutDashboard],
+        ["dashboard", "Overview", LayoutDashboard],
         ["enquiries", "Leads", Inbox],
         ["tasks", "Tasks", CheckSquare],
         ["bookings", "Bookings", ClipboardCheck],
@@ -330,11 +314,18 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
   const mobilePrimaryIds = new Set(mobilePrimary.map(([id]) => id));
   const mobileSecondary = nav.filter(([id]) => !mobilePrimaryIds.has(id));
   const secondaryActive = mobileSecondary.some(([id]) => id === view);
-  const openView = (next: View) => {
+  const openView = (next: View, recordId?: string) => {
+    if (!canOpenWorkspace(role, next)) return;
     setMoreOpen(false);
     setMobileSearch(false);
-    if (next === "staff" && view === "staff" && activityMemberId) {
-      window.history.pushState(null, "", "/staff");
+    if (recordId && (next === "quotations" || next === "enquiries")) {
+      window.history.pushState(null, "", `/${next}/${encodeURIComponent(recordId)}`);
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (next === view && ((next === "staff" && activityMemberId) || (next === "enquiries" && enquiryId) || (next === "quotations" && quoteId))) {
+      if (next === "quotations") setLoading(true);
+      window.history.pushState(null, "", `/${next}`);
       return;
     }
     if (next !== view || activeCustomerId) {
@@ -352,7 +343,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
     location.reload();
   };
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-view={view}>
       {offline && <div className="connection-banner" role="alert">You are offline. Changes cannot be saved. Reconnect or call your coordinator.</div>}
       <aside className="sidebar">
         <div className="brand">
@@ -361,11 +352,16 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
           </span>
           <span>EarlyBird</span>
         </div>
-        <nav>
-          {nav.map(([id, label, Icon]) => (
+        <nav aria-label="Workspace navigation">
+          {navGroups.map(({ title, views }) => {
+            const items = views.flatMap((id) => nav.filter(([candidate]) => candidate === id));
+            return items.length > 0 && <div className="nav-group" key={title}>
+            <span className="nav-group-title">{title}</span>
+            {items.map(([id, label, Icon]) => (
             <button
               key={id}
               className={view === id ? "active" : ""}
+              aria-current={view === id ? "page" : undefined}
               onClick={() => openView(id)}
               onMouseEnter={() => router.prefetch(`/${id}`)}
             >
@@ -373,7 +369,9 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
               {label}
               {id === "notifications" && unread > 0 && <em>{unread}</em>}
             </button>
-          ))}
+            ))}
+            </div>;
+          })}
         </nav>
         <div className="sidebar-foot">
           <div className="agency-chip">
@@ -415,7 +413,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
             <h1>{view === "staff" && activityMemberId ? "Team activity" : nav.find((x) => x[0] === view)?.[1]}</h1>
           </div>
           <div className="top-actions">
-            {!activeCustomerId && <label className="search">
+            {!activeCustomerId && !quoteId && view !== "package-templates" && <label className="search">
               <Search />
               <input
                 value={search}
@@ -423,14 +421,14 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
                 placeholder="Search this page"
               />
             </label>}
-            <button
+            {!quoteId && view !== "package-templates" && <button
               className="icon-button mobile-search-trigger"
               aria-label="Search this screen"
               aria-expanded={mobileSearch}
               onClick={() => setMobileSearch((value) => !value)}
             >
               {mobileSearch ? <X /> : <Search />}
-            </button>
+            </button>}
             <button
               className="icon-button notify"
               aria-label={unread ? `${unread} unread alerts` : "Open alerts"}
@@ -441,7 +439,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
             </button>
           </div>
         </header>
-        {mobileSearch && (
+        {mobileSearch && !quoteId && view !== "package-templates" && (
           <div className="mobile-search-panel">
             <Search />
             <input
@@ -467,7 +465,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
             <RouteLoading />
           ) : (
             <>
-          {isPagedView(view) && !activeCustomerId && (
+          {isPagedView(view) && !activeCustomerId && !enquiryId && !quoteId && (
             <ListFiltersBar
               view={view}
               role={role}
@@ -487,15 +485,15 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
           )}
           {view === "dashboard" && <Dashboard s={snap} go={openView} />}{" "}
           {view === "enquiries" && (
-            <Enquiries s={snap} q={search} reload={load} fail={setError} />
+            <Enquiries key={enquiryId || "enquiry-list"} detailId={enquiryId} s={snap} q={search} reload={load} fail={setError} />
           )}{" "}
           {view === "customers" && activeCustomerId && <CustomerDetailPage id={activeCustomerId} embedded back={() => { window.history.pushState(null, "", "/customers"); setActiveCustomerId(""); setLoading(true); }} />}
           {view === "customers" && !activeCustomerId && (
             <Customers s={snap} q={search} reload={load} fail={setError} openDetail={(id) => { window.history.pushState(null, "", `/customers/${encodeURIComponent(id)}`); setActiveCustomerId(id); setLoading(true); }} />
           )}{" "}
-          {view === "quotations" && (
-            <Quotations s={snap} q={search} reload={load} fail={setError} />
-          )}{" "}
+          {view === "quotations" && (quoteId
+            ? <LinkedQuote key={quoteId} quoteId={quoteId} actor={snap.actor} />
+            : snap.scope === "quotations" && <Quotations s={snap} q={search} reload={load} fail={setError} />)}{" "}
           {view === "bookings" && (
             <Bookings s={snap} q={search} reload={load} fail={setError} />
           )}{" "}
@@ -522,6 +520,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
           {view === "invoice-settings" && (
             <InvoiceSettings s={snap} reload={load} fail={setError} />
           )}{" "}
+          {view === "package-templates" && role === "owner" && <PackageTemplates actor={snap.actor} />}
           {view === "staff" && snap.actor.role === "owner" && (activityMemberId
             ? <StaffActivityDetail key={activityMemberId} s={snap} memberId={activityMemberId} back={() => openView("staff")} />
             : <Staff s={snap} reload={load} fail={setError} viewActivity={(id) => {
@@ -529,7 +528,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
               window.history.pushState(null, "", `/staff/activity/${encodeURIComponent(id)}`);
               window.scrollTo(0, 0);
             }} />)}
-          {isPagedView(view) && !activeCustomerId && snap.pagination && (
+          {isPagedView(view) && !activeCustomerId && !enquiryId && !quoteId && snap.pagination && (
             <PaginationBar
               value={snap.pagination}
               change={(page) => {
@@ -600,9 +599,10 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
 }
 
 function Dashboard({ s, go }: { s: Snap; go: (v: View) => void }) {
-  const today = new Date().toISOString().slice(0, 10),
+  const today = indiaInput(new Date().toISOString()).slice(0, 10),
     open = s.tasks.filter((t) => !["Done", "Cancelled"].includes(t.status)),
-    due = open.filter((t) => String(t.dueAt).slice(0, 10) <= today),
+    due = open.filter((t) => t.dueAt && indiaInput(t.dueAt).slice(0, 10) <= today)
+      .sort((a, b) => String(a.dueAt).localeCompare(String(b.dueAt))),
     newLeads = s.enquiries.filter((e) => e.stage === "New"),
     unread = s.notifications.filter((n) => !n.read);
   return (
@@ -632,12 +632,12 @@ function Dashboard({ s, go }: { s: Snap; go: (v: View) => void }) {
         </button>
       </div>
       <div className="metrics">
-        <Metric
+        {s.actor.role !== "operations" && <Metric
           icon={Inbox}
           label="Open enquiries"
           value={s.enquiries.filter((x) => x.stage !== "Lost").length}
           note={`${newLeads.length} new`}
-        />
+        />}
         <Metric
           icon={Clock3}
           label="Due or overdue"
@@ -661,8 +661,8 @@ function Dashboard({ s, go }: { s: Snap; go: (v: View) => void }) {
       <div className="dashboard-grid">
         <section className="panel">
           <PanelHead
-            title="Today's route"
-            sub="Your next actions, ordered by time"
+            title="Due today or overdue"
+            sub="Open tasks, earliest due first"
             action={
               <button className="text-button" onClick={() => go("tasks")}>
                 View all <ArrowRight />
@@ -670,7 +670,7 @@ function Dashboard({ s, go }: { s: Snap; go: (v: View) => void }) {
             }
           />
           <div className="timeline">
-            {open.slice(0, 6).map((t, i) => (
+            {due.slice(0, 6).map((t, i) => (
               <div className="timeline-row" key={t._id}>
                 <span
                   className={
@@ -689,16 +689,19 @@ function Dashboard({ s, go }: { s: Snap; go: (v: View) => void }) {
                 </div>
               </div>
             ))}
-            {!open.length && (
+            {!due.length && (
               <Empty
                 icon={Check}
-                title="Nothing pending"
-                text="New assignments and follow-ups will appear here."
+                title="Nothing due today"
+                text="Open Tasks to see upcoming work."
               />
             )}
           </div>
         </section>
-        <section className="panel">
+        {s.actor.role === "operations" ? <section className="panel">
+          <PanelHead title="My trips" sub="Open your assigned trips, pickup details and trip updates." />
+          <button className="button secondary" onClick={() => go("operations")}>View my trips <ArrowRight /></button>
+        </section> : <section className="panel">
           <PanelHead
             title="Enquiry pulse"
             sub="Where active conversations stand"
@@ -733,7 +736,7 @@ function Dashboard({ s, go }: { s: Snap; go: (v: View) => void }) {
           >
             Review workspace
           </button>
-        </section>
+        </section>}
       </div>
     </>
   );
@@ -779,7 +782,7 @@ const filterStatuses: Partial<Record<View, string[]>> = {
   customers: ["Ready", "Needs review"],
   enquiries: ["New", "Contacting", "Gathering details", "Quote requested", "Quote sent", "Won", "On hold", "Lost"],
   quotations: ["Requested", "Draft", "Needs information", "Pending approval", "Approved", "Accepted", "Rejected", "Expired", "Superseded"],
-  bookings: ["Awaiting advance", "Ready for operations release", "Operations released", "Trip completed", "Cancelled"],
+  bookings: ["Ready for coordination", "Awaiting advance", "Ready for operations release", "Pending confirmation", "Trip completed", "Cancelled"],
   operations: ["Operations released", "In progress", "Trip completed", "Cancelled"],
   settlements: ["Operations released", "Trip completed", "Cancelled"],
   tasks: ["To do", "In progress", "Waiting", "Done", "Cancelled"],
@@ -808,7 +811,7 @@ function ListFiltersBar({
         <span>Status</span>
         <select value={value.status} onChange={(event) => update("status", event.target.value)}>
           <option value="">All statuses</option>
-          {(filterStatuses[view] || []).map((item) => <option key={item}>{item}</option>)}
+          {(filterStatuses[view] || []).map((item) => <option key={item} value={item}>{view === "enquiries" && item === "Won" ? "Accepted" : item}</option>)}
         </select>
       </label>
       {showAssignee && (
@@ -968,7 +971,7 @@ function Customers({
               required
             />
             <Field
-              label="Phone with country code"
+              label="Phone number"
               value={data.phone}
               set={(v: any) => setData({ ...data, phone: v })}
               placeholder="+91 98765 43210"
@@ -1023,15 +1026,15 @@ function Customers({
                 })
                 .map((invoice: Row) => (
                   <div className="customer-invoice-item" key={invoice._id}>
-                    <a href={`/api/documents/finance/${invoice.documentId}`} target="_blank" rel="noreferrer">
-                      <ReceiptText /><span><b>{invoice.invoiceNumber}</b><small>{invoice.status} · {invoice.issuedAt ? new Date(invoice.issuedAt).toLocaleDateString("en-IN") : "Date unavailable"} · {invoice.snapshot?.currency || invoice.currency} {Number(invoice.totalMinor || 0) / 100}</small></span><ArrowRight />
-                    </a>
+                    {invoice.documentId && <a href={`/api/documents/finance/${invoice.documentId}`} download>
+                      <ReceiptText /><span><b>{invoice.invoiceNumber}</b><small>{invoice.status} · Download invoice</small></span><Download />
+                    </a>}
                     {s.actor.role === "owner" && invoice.status === "Issued" && <details><summary>Prepare renamed print copies</summary><div className="invoice-copy-action"><input value={copyLabels[invoice._id] ?? (invoice.snapshot?.copyLabels || ["Customer copy", "Office copy"]).join(", ")} onChange={(event) => setCopyLabels({ ...copyLabels, [invoice._id]: event.target.value })} placeholder="Customer copy, Office copy" /><button type="button" className="button secondary" disabled={printing === invoice._id} onClick={async () => {
                       const labels = (copyLabels[invoice._id] ?? (invoice.snapshot?.copyLabels || ["Customer copy", "Office copy"]).join(", ")).split(",").map((item) => item.trim()).filter(Boolean).slice(0, 6);
                       if (!labels.length) { fail("Add at least one print-copy label."); return; }
-                      const tab = window.open("", "_blank"); setPrinting(invoice._id);
-                      try { const result = await api("invoice-print-copies", { invoiceId: invoice._id, copyLabels: labels }); const url = `/api/documents/finance/${result.documentId}`; if (tab) tab.location.href = url; else { const link = document.createElement("a"); link.href = url; link.target = "_blank"; link.click(); } }
-                      catch (error) { tab?.close(); fail((error as Error).message); } finally { setPrinting(""); }
+                      setPrinting(invoice._id);
+                      try { const result = await api("invoice-print-copies", { invoiceId: invoice._id, copyLabels: labels }); const link = document.createElement("a"); link.href = `/api/documents/finance/${result.documentId}`; link.download = ""; link.click(); }
+                      catch (error) { fail((error as Error).message); } finally { setPrinting(""); }
                     }}><Copy /> {printing === invoice._id ? "Preparing..." : "Create printable PDF"}</button></div><small>This does not create a new invoice or change the issued data.</small></details>}
                   </div>
                 ))}
@@ -1052,17 +1055,56 @@ function Enquiries({
   q,
   reload,
   fail,
+  detailId,
 }: {
   s: Snap;
   q: string;
   reload: () => Promise<void>;
   fail: (x: string) => void;
+  detailId: string;
 }) {
   const [open, setOpen] = useState(false),
     [edit, setEdit] = useState<Row | null>(null),
     [busy, setBusy] = useState(false);
+  const [pickedCustomer, setPickedCustomer] = useState<Row | null>(null);
+  const [quickCustomer, setQuickCustomer] = useState(false);
+  const [customerDraft, setCustomerDraft] = useState({ name: "", phone: "", email: "" });
+  const [customerError, setCustomerError] = useState("");
+  const [savingCustomer, setSavingCustomer] = useState(false);
+  const customerWrite = useRef(false);
+  const [section, setSection] = useState<"start" | "trip" | "activity" | "quote">("start");
+  const [activity, setActivity] = useState<{ events: Row[]; followUp?: Row; quotes?: Row[]; booking?: Row; quoteGaps?: string[] } | null>(null);
+  const [activityError, setActivityError] = useState("");
+  const [teamChoice, setTeamChoice] = useState("");
+  const [checkedAt, setCheckedAt] = useState(0);
+  const [revision, setRevision] = useState(0);
+  const [quoteBusy, setQuoteBusy] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [quoteError, setQuoteError] = useState("");
+  const [quoteDue, setQuoteDue] = useState(() => indiaInput(new Date(Date.now() + 86_400_000).toISOString()));
+  const [quoteNote, setQuoteNote] = useState("");
+  const [baseline, setBaseline] = useState("");
+  const activityId = detailId || (open ? edit?._id : undefined);
+  useEffect(() => {
+    if (!activityId) return;
+    let active = true;
+    const timer = window.setInterval(() => setCheckedAt(Date.now()), 30_000);
+    fetch(`/api/crm?resource=enquiry-activity&id=${encodeURIComponent(activityId)}`, { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) throw new Error(response.status === 404 ? "This enquiry is missing or you no longer have access." : "Could not load enquiry details.");
+      const result = await response.json();
+      if (!active) return;
+      if (detailId && result.enquiry) {
+        start(result.enquiry, revision !== 0);
+        setPickedCustomer(result.customer || null);
+      }
+      setActivity(result);
+      setActivityError("");
+    }).catch((error) => { if (active) setActivityError(error.message || "Could not load enquiry details."); });
+    return () => { active = false; window.clearInterval(timer); };
+  }, [activityId, detailId, revision]);
   const defaultData = () => ({
     customerId: "",
+    collaboratorIds: [] as string[],
     destination: "",
     source: "WhatsApp",
     assigneeId:
@@ -1103,29 +1145,53 @@ function Enquiries({
       .toLowerCase()
       .includes(q.toLowerCase()),
   );
-  function start(r?: Row) {
+  function start(r?: Row, keepSection = false) {
     setEdit(r || null);
-    setData(
-      r
+    setCheckedAt(Date.now());
+    if (!keepSection) setSection("start");
+    setActivity(null);
+    setActivityError("");
+    setTeamChoice("");
+    setPickedCustomer(null);
+    setQuickCustomer(false);
+    setCustomerDraft({ name: "", phone: "", email: "" });
+    setCustomerError("");
+    const draft = r
         ? {
             ...defaultData(),
             ...r,
-            firstContactAt: local(r.firstContactAt),
+            firstContactAt: local(r.firstContactAt || new Date().toISOString()),
             nextFollowUp: local(r.nextFollowUp),
           }
-        : defaultData(),
-    );
+        : defaultData();
+    setBaseline(JSON.stringify(draft));
+    setData(draft);
     setOpen(true);
   }
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    if (quickCustomer || customerWrite.current || busy || quoteBusy) return;
     if (!data.customerId) {
+      setSection("start");
       fail("Search for a customer and choose an exact result.");
       return;
     }
     if (data.nextFollowUp && !String(data.nextAction || "").trim()) {
+      setSection("activity");
       fail("Enter the next action before scheduling a follow-up.");
       return;
+    }
+    if (data.dateMode === "Exact" && (!data.departure || !data.returnDate || data.returnDate < data.departure)) {
+      setSection("trip");
+      fail("Choose valid start and end dates in order, or change Travel dates if they aren't confirmed.");
+      return;
+    }
+    if (data.stage === "On hold" && !data.nextFollowUp) {
+      setSection("activity"); fail("Choose when to follow up on this enquiry."); return;
+    }
+    if (!data.firstContactAt) { setSection("activity"); fail("Enter when the contact clock starts."); return; }
+    if (["Lost", "On hold"].includes(data.stage) && !String(data.reason || "").trim()) {
+      setSection("activity"); fail("Enter a reason for this status."); return;
     }
     setBusy(true);
     try {
@@ -1134,13 +1200,14 @@ function Enquiries({
         destination: data.destination || "",
         source: data.source,
         assigneeId: data.assigneeId,
+        collaboratorIds: (data.collaboratorIds || []).filter((person: string) => person !== data.assigneeId),
         stage: data.stage,
-        firstContactAt: iso(data.firstContactAt),
+        firstContactAt: iso(data.firstContactAt, edit?.firstContactAt),
         dateMode: data.dateMode,
         departure: data.departure || "",
         returnDate: data.returnDate || "",
         travelPreference: data.travelPreference || "",
-        nextFollowUp: iso(data.nextFollowUp),
+        nextFollowUp: iso(data.nextFollowUp, edit?.nextFollowUp),
         nextAction: data.nextAction || "",
         adults: data.adults === "" ? null : Number(data.adults),
         childrenAges: data.childrenAges || "",
@@ -1160,7 +1227,8 @@ function Enquiries({
         reviewNeeded: Boolean(data.reviewNeeded),
       };
       await api("enquiry", payload, { id: edit?._id, version: edit?.version, logContact: data.logContact === true });
-      setOpen(false);
+      if (detailId) { setFeedback("Enquiry saved."); setRevision((value) => value + 1); }
+      else setOpen(false);
       await reload();
     } catch (e) {
       fail((e as Error).message);
@@ -1168,8 +1236,74 @@ function Enquiries({
       setBusy(false);
     }
   }
+  async function addCustomer() {
+    if (customerWrite.current || busy) return;
+    const name = customerDraft.name.trim();
+    const phone = customerDraft.phone.trim();
+    const email = customerDraft.email.trim();
+    if (name.length < 2) { setCustomerError("Enter the customer's name."); return; }
+    if (!phone && !email) { setCustomerError("Enter a phone number or email."); return; }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setCustomerError("Enter a valid email address."); return; }
+    customerWrite.current = true;
+    setSavingCustomer(true);
+    setCustomerError("");
+    try {
+      const id = await api("customer", { ...emptyCustomer, name, phone, email });
+      if (typeof id !== "string" || !id) throw new Error("Could not select the saved customer. Search for their name before trying again.");
+      setPickedCustomer({ _id: id, version: 1, name, phone, email });
+      setData((draft: any) => ({ ...draft, customerId: id }));
+      setQuickCustomer(false);
+      setCustomerDraft({ name: "", phone: "", email: "" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not add the customer. Try again.";
+      setCustomerError(message.startsWith("A possible duplicate")
+        ? "That phone or email may already belong to a customer. Cancel and search for the existing record. If you can't see it, ask the Owner to check."
+        : message);
+    } finally {
+      customerWrite.current = false;
+      setSavingCustomer(false);
+    }
+  }
+  const canChangeLead = !edit || s.actor.role === "owner" || edit.createdById === s.actor.id;
+  const team: string[] = data.collaboratorIds || [];
+  const staffOptions = s.staff.filter((person) => person.status === "active" && person.role !== "operations");
+  const leadOptions = staffOptions.map((person) => [person._id, person._id === s.actor.id ? `${person.name} (you)` : person.name]);
+  if (data.assigneeId && !staffOptions.some((person) => person._id === data.assigneeId))
+    leadOptions.unshift([data.assigneeId, "Current lead (unavailable)"]);
+  const eligibleTeammates = staffOptions.filter((person) => person._id !== s.actor.id && person._id !== data.assigneeId && !team.includes(person._id));
+  const enquiryStage = (value: string) => value === "Won" ? "Accepted" : value;
+  const trackStatus = activity?.booking?.status === "Trip completed" ? "Trip completed" : enquiryStage(edit?.stage);
+  const openQuote = (id: string) => {
+    window.history.pushState(null, "", `/quotations/${encodeURIComponent(id)}`);
+    window.scrollTo(0, 0);
+  };
+  const followUp = activity?.followUp;
+  const followUpOpen = followUp && ["To do", "In progress", "Waiting"].includes(followUp.status);
+  const dirty = Boolean(detailId && edit && baseline !== JSON.stringify(data));
+  const linked = activity?.quotes || [];
+  const activeQuote = linked.find((quote) => activeQuoteStatuses.includes(quote.status));
+  const requestBlocked = quoteRequestBlock({ stage: edit?.stage, reviewNeeded: edit?.reviewNeeded });
+  const quoteGaps = activity?.quoteGaps || [];
+  async function makeQuote() {
+    if (!detailId || !activity || dirty || activeQuote || requestBlocked || !quoteDue || quoteGaps.length || quoteBusy) return;
+    setQuoteBusy(true);
+    setQuoteError("");
+    try {
+      const id = await api("quote-request", { enquiryId: detailId, requestedDueAt: indiaIso(quoteDue), requestNote: quoteNote.trim() });
+      setRevision((value) => value + 1);
+      setQuoteNote("");
+      setFeedback("Quote requested.");
+      if (typeof id === "string") openQuote(id);
+    } catch (error) {
+      setQuoteError(error instanceof Error ? error.message : "Could not request the quote.");
+      if (error instanceof Error && error.message.includes("active quotation")) setRevision((value) => value + 1);
+    } finally { setQuoteBusy(false); }
+  }
+  const back = () => { if (!customerWrite.current) window.history.pushState(null, "", "/enquiries"); };
+  const Frame = detailId ? EnquiryPageFrame : Drawer;
   return (
     <>
+      {!detailId && <>
       <div className="section-actions">
         <div className="filter-pills">
           {[
@@ -1187,7 +1321,7 @@ function Enquiries({
               {x === "All"
                 ? rows.length
                 : rows.filter((r) => r.stage === x).length}{" "}
-              {x}
+              {enquiryStage(x)}
             </span>
           ))}
         </div>
@@ -1209,7 +1343,7 @@ function Enquiries({
             <span />
           </div>
           {rows.map((r) => (
-            <button className="table-row" key={r._id} onClick={() => start(r)}>
+            <button className="table-row" key={r._id} onClick={() => { window.history.pushState(null, "", `/enquiries/${encodeURIComponent(r._id)}`); window.scrollTo(0, 0); }}>
               <span>
                 <b>{customers[r.customerId]?.name || "Unknown"}</b>
                 <small>{r.source}</small>
@@ -1218,7 +1352,7 @@ function Enquiries({
                 {r.destination || r.travelPreference || "Not decided"}
               </span>
               <span>
-                <Badge value={r.reviewNeeded ? "Needs review" : r.stage} />
+                <Badge value={r.reviewNeeded ? "Needs review" : enquiryStage(r.stage)} />
               </span>
               <span>
                 {r.nextFollowUp ? moneyDate(r.nextFollowUp) : "Not scheduled"}
@@ -1239,21 +1373,81 @@ function Enquiries({
           )}
         </div>
       </section>
+      </>}
+      {detailId && !open && <section className="panel">
+        <button type="button" className="button secondary" onClick={back}><ChevronLeft /> Back to enquiries</button>
+        <p role={activityError ? "alert" : "status"}>{activityError || "Loading enquiry…"}</p>
+      </section>}
       {open && (
-        <Drawer
+        <Frame
           title={edit ? "Edit enquiry" : "Capture enquiry"}
-          close={() => setOpen(false)}
+          close={detailId ? back : () => { if (!customerWrite.current) setOpen(false); }}
           wide
         >
           <form className="form-grid" onSubmit={save}>
             <p className="form-guidance span">
-              Fields marked * are required. Complete the other fields as the customer shares more information.
+              Save the basics now or switch sections to add details during the call.
             </p>
-            <CustomerSearch
-              value={data.customerId}
-              set={(v: any) => setData({ ...data, customerId: v })}
-              selected={customers[data.customerId]}
-            />
+            {feedback && <p className="enquiry-feedback span" role="status">{feedback}</p>}
+            {edit && <div className="enquiry-summary span">
+              <h3>{pickedCustomer?.name || customers[edit.customerId]?.name || "Customer"}{edit.destination ? ` · ${edit.destination}` : ""}</h3>
+              <b>{trackStatus} · Lead: {s.staff.find((person) => person._id === edit.assigneeId)?.name || "Team member"}</b>
+              <p>{followUpOpen ? `${Date.parse(followUp.dueAt) < checkedAt ? "Overdue" : "Due"}: ${followUp.title} · ${moneyDate(followUp.dueAt)} IST` : activity ? "No open follow-up." : ""}</p>
+              {followUpOpen && <button type="button" className="button secondary" onClick={() => setSection("activity")}>Update follow-up</button>}
+            </div>}
+            <div className="enquiry-step-nav span" aria-label="Enquiry sections">
+              {(["start", "trip", "activity", ...(detailId ? ["quote"] as const : [])] as const).map((step) => <button key={step} type="button" className={`button ${section === step ? "primary" : "secondary"}`}
+                aria-pressed={section === step} disabled={savingCustomer || busy} onClick={() => setSection(step)}>{step === "start" ? "Start" : step === "trip" ? "Trip" : step === "activity" ? "Activity" : "Quote & package"}</button>)}
+            </div>
+            {section === "quote" && <section className="enquiry-quote-box span">
+              <h3>Quote &amp; package</h3>
+              <p>Build the quote and itinerary here. Only the Owner can approve it for sharing.</p>
+              {dirty && <p className="enquiry-feedback">Save your enquiry changes before working on a quote.</p>}
+              {activityError && <p role="alert">{activityError}</p>}
+              {activeQuote ? <p>Quotation {activeQuote.quoteNumber} already exists. Open it below to continue.</p> : requestBlocked ? <p>{requestBlocked}</p> : <>
+                {!activity && !activityError && <p role="status">Checking the saved enquiry…</p>}
+                {quoteGaps.length > 0 ? <>
+                  <p>Before requesting a quotation, add {quoteGaps.join(", ")}.</p>
+                  <button type="button" className="button secondary" onClick={() => setSection(quoteGaps.includes("destination") ? "start" : "trip")}>Complete enquiry details</button>
+                </> : <>
+                  <label className="field">Quote due (IST)<input type="datetime-local" value={quoteDue} onChange={(event) => setQuoteDue(event.target.value)} /></label>
+                  <label className="field">Note for reviewer (optional)<textarea value={quoteNote} onChange={(event) => setQuoteNote(event.target.value)} maxLength={1000} /></label>
+                </>}
+                <button type="button" className="button primary" onClick={() => void makeQuote()} disabled={dirty || !activity || quoteBusy || busy || !quoteDue || quoteGaps.length > 0}>{quoteBusy ? "Requesting…" : "Request quotation"}</button>
+              </>}
+              {quoteError && <p role="alert" className="form-error">{quoteError}</p>}
+              {linked.length > 0 && <ul>{linked.map((quote) => <li key={quote._id}>
+                <span><b>{quote.quoteNumber} · v{quote.quoteVersion}</b><small>{quote.status} · PDF {quote.pdfStatus || "not started"}</small></span>
+                <button type="button" className="button secondary" disabled={dirty || busy || quoteBusy} onClick={() => openQuote(quote._id)}>Open quote</button>
+              </li>)}</ul>}
+            </section>}
+            {section === "start" && <>
+            <div className="span enquiry-customer">
+              <CustomerSearch value={data.customerId} disabled={savingCustomer}
+                set={(value: string) => setData((draft: any) => ({ ...draft, customerId: value }))}
+                onChoose={setPickedCustomer}
+                selected={pickedCustomer && pickedCustomer._id === data.customerId ? pickedCustomer : customers[data.customerId]} />
+              {!quickCustomer && <button type="button" className="button secondary" disabled={busy} onClick={() => {
+                setCustomerError(""); setQuickCustomer(true);
+              }}><Plus aria-hidden="true" /> Add customer</button>}
+            </div>
+            {quickCustomer && <fieldset className="span enquiry-quick-customer" disabled={savingCustomer}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && event.target instanceof HTMLInputElement) { event.preventDefault(); void addCustomer(); }
+              }}>
+              <legend>New customer</legend>
+              <p>Enter a name and at least one contact detail. Saving creates the customer and selects them here.</p>
+              <div className="enquiry-customer-fields">
+                <label className="field">Customer name <input autoFocus autoComplete="off" maxLength={160} value={customerDraft.name} onChange={(event) => setCustomerDraft({ ...customerDraft, name: event.target.value })} /></label>
+                <label className="field">Phone number <input type="tel" maxLength={40} value={customerDraft.phone} onChange={(event) => setCustomerDraft({ ...customerDraft, phone: event.target.value })} /></label>
+                <label className="field">Email <input type="email" maxLength={254} value={customerDraft.email} onChange={(event) => setCustomerDraft({ ...customerDraft, email: event.target.value })} /></label>
+              </div>
+              {customerError && <p role="alert" className="form-error">{customerError}</p>}
+              <div className="enquiry-customer-buttons">
+                <button type="button" className="button secondary" onClick={() => { setQuickCustomer(false); setCustomerDraft({ name: "", phone: "", email: "" }); setCustomerError(""); }}>Cancel</button>
+                <button type="button" className="button primary" onClick={() => void addCustomer()}>{savingCustomer ? "Adding customer…" : "Save and select customer"}</button>
+              </div>
+            </fieldset>}
             <Select
               label="Source"
               value={data.source}
@@ -1275,18 +1469,29 @@ function Enquiries({
               set={(v: any) => setData({ ...data, destination: v })}
             />
             <Select
-              label="Assigned to"
+              label="Lead"
               value={data.assigneeId}
               set={(v: any) => setData({ ...data, assigneeId: v })}
-              options={s.staff
-                .filter((x) => x.status === "active" && x.role !== "operations")
-                .map((x) => [x._id, x.name])}
-              disabled={s.actor.role !== "owner"}
+              options={leadOptions}
+              disabled={!canChangeLead}
               required
-              hint="Only the assigned Sales person can see and work on this enquiry."
+              hint="This person is responsible for the next follow-up. The Owner can always see this enquiry."
             />
+            <div className="span enquiry-team">
+              <span>Team members (optional)</span>
+              <div className="enquiry-team-members">{team.filter((person) => person !== data.assigneeId).map((person) => {
+                const name = s.staff.find((item) => item._id === person)?.name || "Inactive team member";
+                return <span className="badge" key={person}>{name}{canChangeLead && <button type="button" aria-label={`Remove ${name}`} onClick={() => setData({ ...data, collaboratorIds: team.filter((id) => id !== person) })}><X aria-hidden="true" /></button>}</span>;
+              })}</div>
+              {eligibleTeammates.length > 0 ? <div className="enquiry-team-picker"><select aria-label="Choose team member" value={eligibleTeammates.some((person) => person._id === teamChoice) ? teamChoice : ""} onChange={(event) => setTeamChoice(event.target.value)}>
+                <option value="">Choose a team member</option>
+                {eligibleTeammates.map((item) => <option key={item._id} value={item._id}>{item.name}</option>)}
+              </select><button type="button" className="button secondary" disabled={team.length >= 20 || !eligibleTeammates.some((person) => person._id === teamChoice)} onClick={() => { setData({ ...data, collaboratorIds: [...team, teamChoice] }); setTeamChoice(""); }}>Add team member</button></div> : <small>No other active team members to add.</small>}
+            </div>
+            </>}
+            {section === "activity" && <>
             <Select
-              label="Stage"
+              label="Status"
               value={data.stage}
               set={(v: any) => setData({ ...data, stage: v })}
               options={[
@@ -1298,9 +1503,17 @@ function Enquiries({
                 "Won",
                 "On hold",
                 "Lost",
-              ]}
+              ].filter((stage) => !["Quote requested", "Quote sent", "Won"].includes(stage) || stage === edit?.stage).map((stage) => [stage, enquiryStage(stage)])}
               required
             />
+            {detailId && <div className="enquiry-status-action">
+              {activeQuote || !requestBlocked ? <>
+                <button type="button" className="button secondary" onClick={() => setSection("quote")}>
+                  <FileSpreadsheet /> {activeQuote ? "View quotation" : "Request quotation"}
+                </button>
+                {!activeQuote && <small className="field-hint">The status changes to Quote requested when the request is saved.</small>}
+              </> : <small className="field-hint">{requestBlocked}</small>}
+            </div>}
             <Select
               label="Call outcome"
               value={data.contactOutcome}
@@ -1308,20 +1521,22 @@ function Enquiries({
               options={["Not contacted", "Connected", "No answer", "Call back"]}
             />
             {data.contactOutcome !== "Not contacted" && !data.reviewNeeded && <label className="check-row span">
-              <input type="checkbox" checked={data.logContact === true} onChange={(event) => setData({ ...data, logContact: event.target.checked })} /> Log this as a new contact attempt
+              <input type="checkbox" checked={data.logContact === true} onChange={(event) => setData({ ...data, logContact: event.target.checked })} /> Log this contact attempt and complete the current follow-up
             </label>}
             <Field
-              label="First contact"
+              label="Contact clock starts (IST)"
               type="datetime-local"
               value={data.firstContactAt}
               set={(v: any) => setData({ ...data, firstContactAt: v })}
               required
             />
+            </>}
+            {section === "trip" && <>
             <Select
-              label="Travel date type"
+              label="Travel dates"
               value={data.dateMode}
               set={(v: any) => setData({ ...data, dateMode: v })}
-              options={["Unknown", "Exact", "Flexible", "Month"]}
+              options={["Unknown", "Exact", "Flexible", ["Month", "Month only"]]}
             />
             {data.dateMode === "Exact" ? (
               <>
@@ -1338,7 +1553,13 @@ function Enquiries({
                   set={(v: any) => setData({ ...data, returnDate: v })}
                 />
               </>
-            ) : (
+            ) : data.dateMode === "Month" ? (
+              <>
+                <Field label="Travel month" type="month" value={/^\d{4}-\d{2}$/.test(data.travelPreference) ? data.travelPreference : ""}
+                  set={(v: string) => setData({ ...data, travelPreference: v })} />
+                {data.travelPreference && !/^\d{4}-\d{2}$/.test(data.travelPreference) && <p className="form-guidance span">Previous preference: {data.travelPreference}</p>}
+              </>
+            ) : data.dateMode === "Flexible" ? (
               <Field
                 label="Travel preference"
                 value={data.travelPreference}
@@ -1346,7 +1567,7 @@ function Enquiries({
                 placeholder="December, flexible by 2 days…"
                 span
               />
-            )}
+            ) : null}
             <Field
               label="Adults"
               type="number"
@@ -1387,6 +1608,11 @@ function Enquiries({
               value={data.pickup}
               set={(v: any) => setData({ ...data, pickup: v })}
             />
+            <Field label="Drop-off / departure" value={data.dropoff} set={(v: string) => setData({ ...data, dropoff: v })} />
+            <Field label="Rooms needed" value={data.rooms} set={(v: string) => setData({ ...data, rooms: v })} />
+            <Field label="Special requirements" value={data.specialRequirements} set={(v: string) => setData({ ...data, specialRequirements: v })} area span />
+            </>}
+            {section === "activity" && <>
             <Field
               label="Next action"
               value={data.nextAction}
@@ -1395,7 +1621,7 @@ function Enquiries({
               required={Boolean(data.nextFollowUp)}
             />
             <Field
-              label="Next follow-up (optional)"
+              label="Next follow-up (IST, optional)"
               type="datetime-local"
               value={data.nextFollowUp}
               set={(v: any) => setData({ ...data, nextFollowUp: v })}
@@ -1410,25 +1636,35 @@ function Enquiries({
               />
             )}
             <Field
-              label="Special requirements"
-              value={data.specialRequirements}
-              set={(v: any) => setData({ ...data, specialRequirements: v })}
-              area
-              span
-            />
-            <Field
               label="Internal notes"
               value={data.notes}
               set={(v: any) => setData({ ...data, notes: v })}
               area
               span
             />
-            <FormFoot busy={busy} />
+            {edit && <section className="enquiry-timeline span" aria-label="Recent changes">
+              <h3>Recent changes</h3>
+              {activityError ? <p role="alert">{activityError}</p> : !activity ? <p role="status">Loading activity…</p> : activity.events.length ? <ul>
+                {activity.events.map((event) => <li key={event._id}><b>{formatFollowUpEvent(event.event)}</b><small>{event.actor} · {moneyDate(event.createdAt)} IST</small></li>)}
+              </ul> : <p>No changes recorded yet.</p>}
+            </section>}
+            </>}
+            <FormFoot busy={busy} disabled={quickCustomer} />
           </form>
-        </Drawer>
+        </Frame>
       )}
     </>
   );
+}
+
+function EnquiryPageFrame({ children, title, close }: { children: React.ReactNode; title: string; close: () => void; wide?: boolean }) {
+  return <section className="panel enquiry-page-frame">
+    <header className="panel-head">
+      <div><p>Enquiries</p><h2>{title}</h2></div>
+      <button className="button secondary" type="button" onClick={close}><ChevronLeft /> Back to enquiries</button>
+    </header>
+    {children}
+  </section>;
 }
 
 function Tasks({
@@ -1489,7 +1725,7 @@ function Tasks({
         {
           title: data.title,
           assigneeId: data.assigneeId,
-          dueAt: iso(data.dueAt),
+          dueAt: iso(data.dueAt, edit?.dueAt),
           status: data.status,
           note: data.note || "",
           enquiryId: data.enquiryId || "",
@@ -1653,23 +1889,29 @@ function Notifications({
 }: {
   s: Snap;
   reload: () => Promise<void>;
-  go: (v: View) => void;
+  go: (v: View, recordId?: string) => void;
   fail: (x: string) => void;
 }) {
+  const [opening, setOpening] = useState("");
   async function read(n: Row) {
+    if (opening) return;
+    setOpening(n._id);
     try {
-      await api("read", {}, { id: n._id });
-      await reload();
+      if (!n.read) await api("read", {}, { id: n._id });
       const key = String(n._id || "");
       if (key.startsWith("attendance-")) go("attendance");
       else if (/^(trip:|operations-|incident:|collection:|handover:|readiness:)/.test(key)) go("operations");
       else if (s.actor.role !== "operations" && /^(settlement-|change-|customer-change:)/.test(key)) go("settlements");
-      else if (s.actor.role !== "operations" && /^(booking:|invoice:|payment:|finance-)/.test(key)) go("bookings");
-      else if (s.actor.role !== "operations" && /^quote/.test(key)) go("quotations");
+      else if (s.actor.role !== "operations" && /^(booking:|invoice:|payment:|finance-|feedback:)/.test(key)) go("bookings");
+      else if (s.actor.role !== "operations" && /^quote/.test(key)) go("quotations", n.recordId);
+      else if (s.actor.role !== "operations" && /^enquiry-team:/.test(key)) go("enquiries", n.recordId);
       else if (/^(task:|due:|overdue:|follow:|reassign:)/.test(key)) go("tasks");
       else go(s.actor.role === "operations" ? "tasks" : "enquiries");
     } catch (e) {
       fail((e as Error).message);
+      await reload();
+    } finally {
+      setOpening("");
     }
   }
   return (
@@ -1682,6 +1924,7 @@ function Notifications({
         <button
           key={n._id}
           className={n.read ? "notification" : "notification unread"}
+          disabled={Boolean(opening)}
           onClick={() => read(n)}
         >
           <span>
@@ -1689,7 +1932,7 @@ function Notifications({
           </span>
           <div>
             <b>{n.title}</b>
-            <small>{moneyDate(n.createdAt)}</small>
+            <small>{!n.read && "Unread · "}{moneyDate(n.createdAt)}</small>
           </div>
           <ArrowRight />
         </button>
@@ -2330,7 +2573,9 @@ function Field({
     </label>
   );
 }
-function CustomerSearch({ value, set, selected }: any) {
+function CustomerSearch({ value, set, selected, onChoose, disabled }: {
+  value: string; set: (value: string) => void; selected?: Row; onChoose: (customer: Row) => void; disabled: boolean;
+}) {
   const listId = useId();
   const [text, setText] = useState(selected?.name || "");
   const [results, setResults] = useState<Row[]>([]);
@@ -2339,7 +2584,6 @@ function CustomerSearch({ value, set, selected }: any) {
 
   useEffect(() => {
     if (selected?.name) setText(selected.name);
-    else if (!value) setText("");
   }, [value, selected?.name]);
 
   useEffect(() => {
@@ -2349,30 +2593,34 @@ function CustomerSearch({ value, set, selected }: any) {
       setLoading(false);
       return;
     }
-    const controller = new AbortController();
+    let active = true;
+    setResults([]);
+    setLoading(true);
     const timer = window.setTimeout(async () => {
       setLoading(true);
       try {
         const response = await fetch(
           `/api/crm?resource=customer-search&q=${encodeURIComponent(query)}&limit=20`,
-          { cache: "no-store", signal: controller.signal },
+          { cache: "no-store" },
         );
         const body = await response.json();
         if (!response.ok) throw new Error(body.error || "Customer search failed");
-        setResults(body.results || []);
-      } catch (error) {
-        if ((error as Error).name !== "AbortError") setResults([]);
+        if (active) setResults(body.results || []);
+      } catch {
+        if (active) setResults([]);
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (active) setLoading(false);
       }
     }, 300);
     return () => {
       window.clearTimeout(timer);
-      controller.abort();
+      active = false;
     };
   }, [open, selected?.name, text, value]);
 
   const choose = (customer: Row) => {
+    if (disabled) return;
+    onChoose(customer);
     set(customer._id);
     setText(customer.name);
     setResults([]);
@@ -2386,10 +2634,13 @@ function CustomerSearch({ value, set, selected }: any) {
         <Search aria-hidden="true" />
         <input
           role="combobox"
+          aria-label="Customer"
+          aria-required="true"
           aria-expanded={open && text.trim().length >= 2}
           aria-controls={listId}
           aria-autocomplete="list"
           autoComplete="off"
+          disabled={disabled}
           placeholder="Search by name, phone or email"
           value={text}
           onFocus={() => setOpen(true)}
@@ -2456,11 +2707,11 @@ function Select({ label, value, set, options, disabled = false, required = false
     </label>
   );
 }
-function FormFoot({ busy }: { busy: boolean }) {
+function FormFoot({ busy, disabled = false }: { busy: boolean; disabled?: boolean }) {
   return (
     <div className="form-foot span">
       <span>Changes are saved to the activity history.</span>
-      <button className="button primary" disabled={busy}>
+      <button className="button primary" disabled={busy || disabled}>
         {busy ? "Saving…" : "Save changes"} <ArrowRight />
       </button>
     </div>

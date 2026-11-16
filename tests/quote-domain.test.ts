@@ -1,5 +1,6 @@
 import { describe,expect,it } from 'vitest';
-import { assertApproverReady,optionAmounts,publicQuoteForRole,type QuoteContent } from '../src/lib/quote-domain';
+import { assertApproverReady,displayMinor,optionAmounts,publicQuoteForRole,quoteApprovalIssues,quoteOptionPrice,type QuoteContent } from '../src/lib/quote-domain';
+import { quoteRequestBlock } from '../src/lib/quote-request-state';
 
 const content=(overrides:Partial<QuoteContent>={}):QuoteContent=>({title:'Kerala escape',summary:'',destinations:'Kochi, Munnar',dateScope:'Exact',startDate:'2027-01-10',endDate:'2027-01-14',dateLabel:'',adults:2,childrenAges:'',infants:0,services:['Accommodation'],itinerary:[],stays:[{id:'s1',optionId:'',city:'Munnar',property:'Hill View',checkIn:'2027-01-10',checkOut:'2027-01-14',roomType:'Deluxe',rooms:1,occupancy:'Double',mealPlan:'Breakfast',extraBed:'',notes:''}],transport:[],options:[{id:'o1',name:'Comfort',description:'',hotel:'',mealPlan:'',priceBasis:'Total package',quantity:1,unitPrice:'45000',discount:'1000',taxLabel:'',taxAmount:'0',internalCost:'36000',notes:''}],optionalExtras:[],inclusions:['Four nights'],exclusions:['Personal expenses'],currency:'INR',advanceAmount:'10000',advanceDue:'Within two days',balanceTerms:'Balance before travel',validUntil:'2027-01-01',cancellationTerms:'Cancellation charges depend on confirmed services.',customerNotes:'',internalNotes:'supplier rate',...overrides});
 
@@ -10,5 +11,31 @@ describe('quotation approval rules',()=>{
  it('requires a clear indicative date label',()=>expect(()=>assertApproverReady(content({dateScope:'Indicative',startDate:'',endDate:'',dateLabel:''}))).toThrow(/indicative/));
  it('calculates exact minor-unit totals and margin',()=>expect(optionAmounts(content().options[0])).toMatchObject({unitPriceMinor:4500000,discountMinor:100000,totalMinor:4400000,internalCostMinor:3600000,estimatedMarginMinor:800000}));
  it('rejects a discount greater than subtotal plus tax',()=>expect(()=>optionAmounts({...content().options[0],unitPrice:'100',discount:'101'})).toThrow(/discount/));
+ it('prices the draft and approved package using the same minor units', () => {
+   const option = { ...content().options[0], unitPrice: '49340', discount: '0' };
+   const draft = quoteOptionPrice(option).totalMinor;
+   expect(draft).toBe(4934000);
+   expect(draft).toBe(optionAmounts(option).totalMinor);
+   expect(displayMinor(draft)).toContain('49,340');
+ });
+ it('names the incomplete hotel and links validity to the terms section', () => {
+   const stay = { ...content().stays[0], checkIn: '', checkOut: '' };
+   expect(quoteApprovalIssues(content({ stays: [stay], validUntil: '' }))).toEqual([
+     { section: 'stays', message: 'Stay 1 (Hill View) needs check-in date, check-out date.' },
+     { section: 'terms', message: 'Set a valid-until date for the quotation.' },
+   ]);
+ });
+ it('shows an actionable warning while an option price is being typed', () => {
+   const option = { ...content().options[0], unitPrice: '.5' };
+   expect(quoteApprovalIssues(content({ options: [option] }))).toMatchObject([
+     { section: 'pricing', message: expect.stringContaining('Comfort') },
+   ]);
+ });
+ it('lets staff request from gathering details and blocks closed or unreviewed enquiries', () => {
+   expect(quoteRequestBlock({ stage: 'Gathering details' })).toBe('');
+   expect(quoteRequestBlock({ stage: 'Won' })).toMatch(/accepted/);
+   expect(quoteRequestBlock({ stage: 'Lost' })).toMatch(/Reopen/);
+   expect(quoteRequestBlock({ reviewNeeded: true })).toMatch(/activate/);
+ });
  it('removes cost and margin fields from sales payloads',()=>{const q:any={content:{...content(),options:[{...content().options[0],internalCostMinor:3600000,estimatedMarginMinor:800000}]},internalCostTotalMinor:3600000,estimatedMarginTotalMinor:800000};const clean=publicQuoteForRole(q,'sales');expect(clean.content.internalNotes).toBe('');expect(clean.content.options[0].internalCost).toBeUndefined();expect(clean.content.options[0].internalCostMinor).toBeUndefined();expect(clean.estimatedMarginTotalMinor).toBeUndefined()});
 });

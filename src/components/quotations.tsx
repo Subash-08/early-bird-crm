@@ -1,7 +1,12 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
+import { indiaInput, indiaIso } from "@/lib/workspace-time";
+import { displayMinor, quoteApprovalIssues, quoteContentSchema, quoteOptionPrice } from "@/lib/quote-domain";
+import { packageDocument } from "@/lib/package-document";
 import {
   AlertCircle,
+  ArrowLeft,
   ArrowRight,
   Check,
   ChevronDown,
@@ -19,6 +24,10 @@ import {
 } from "lucide-react";
 
 type Row = Record<string, any> & { _id: string; version: number };
+function openQuotation(id: string) {
+  window.history.pushState(null, "", `/quotations/${encodeURIComponent(id)}`);
+  window.scrollTo(0, 0);
+}
 const services = [
   "Accommodation",
   "Car / transfer",
@@ -31,8 +40,8 @@ const services = [
   "Other",
 ];
 const uid = () => crypto.randomUUID();
-const local = (v = "") => (v ? new Date(v).toISOString().slice(0, 16) : "");
-const iso = (v = "") => (v ? new Date(v).toISOString() : "");
+const local = indiaInput;
+const iso = indiaIso;
 async function api(action: string, data: any = {}, more: any = {}) {
   const r = await fetch("/api/crm", {
     method: "POST",
@@ -73,13 +82,22 @@ function defaultContent() {
     internalNotes: "",
   };
 }
-function money(value: string | number, currency = "INR") {
-  const n = typeof value === "number" ? value / 100 : Number(value || 0);
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 2,
-  }).format(n);
+function optionPrice(option: Parameters<typeof quoteOptionPrice>[0] & { totalMinor?: number }, currency: string) {
+  try {
+    const total = option.totalMinor ?? quoteOptionPrice(option).totalMinor;
+    return Number.isFinite(total) ? displayMinor(total, currency) : "Check price";
+  } catch {
+    return "Check price";
+  }
+}
+
+
+function packageDate(value?: string) {
+  if (!value) return "";
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(date)
+    : value;
 }
 
 export function Quotations({
@@ -94,22 +112,20 @@ export function Quotations({
   fail: (x: string) => void;
 }) {
   const [request, setRequest] = useState(false),
-    [selected, setSelected] = useState<Row | null>(null),
     [busy, setBusy] = useState(false);
   const customers = Object.fromEntries(s.customers.map((x: Row) => [x._id, x]));
-  const enqs = Object.fromEntries(s.enquiries.map((x: Row) => [x._id, x]));
   const rows = s.quotes.filter((x: Row) =>
     [x.quoteNumber, x.content?.title, customers[x.customerId]?.name, x.status]
       .join(" ")
       .toLowerCase()
       .includes(q.toLowerCase()),
   );
-  async function run(fn: () => Promise<any>, close = false) {
+  async function run(fn: () => Promise<any>) {
     setBusy(true);
     try {
-      await fn();
-      if (close) setSelected(null);
-      await reload();
+      const id = await fn();
+      if (typeof id === "string") openQuotation(id);
+      else await reload();
       return true;
     } catch (e) {
       fail((e as Error).message);
@@ -125,7 +141,7 @@ export function Quotations({
           <p className="eyebrow">Customer proposals</p>
           <h2>From requirements to one approved version.</h2>
           <p>
-            Owner prepares and approves. Sales shares only the frozen PDF and
+            The enquiry team prepares drafts. The Owner approves, and Sales shares the approved PDF and
             records the customer decision.
           </p>
         </div>
@@ -174,7 +190,7 @@ export function Quotations({
             <button
               className="quote-row"
               key={r._id}
-              onClick={() => setSelected(r)}
+              onClick={() => openQuotation(r._id)}
             >
               <span>
                 <b>{r.quoteNumber}</b>
@@ -206,23 +222,11 @@ export function Quotations({
           close={() => setRequest(false)}
           busy={busy}
           submit={async (data: any) => {
-            if (await run(() => api("quote-request", data), false))
+            if (await run(() => api("quote-request", data)))
               setRequest(false);
           }}
         />
       )}{" "}
-      {selected && (
-        <QuoteDetail
-          key={`${selected._id}:${selected.version}`}
-          s={s}
-          q={selected}
-          customer={customers[selected.customerId]}
-          enquiry={enqs[selected.enquiryId]}
-          close={() => setSelected(null)}
-          busy={busy}
-          run={run}
-        />
-      )}
     </>
   );
 }
@@ -317,10 +321,162 @@ function RequestQuote({ s, close, busy, submit }: any) {
   );
 }
 
-function QuoteDetail({ s, q, customer, enquiry, close, busy, run }: any) {
+export function LinkedQuote({ quoteId, actor }: {
+  quoteId: string; actor: { id: string; role: string };
+}) {
+  const [details, setDetails] = useState<{ quote: Row; customer: Row | null; enquiry: Row | null; quoteTemplates: Row[]; booking: Row | null } | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/crm?resource=enquiry-quote&id=${encodeURIComponent(quoteId)}`, { cache: "no-store" }).then(async (response) => {
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not open the quote.");
+      if (active) { setDetails(body); setBusy(false); }
+    }).catch((reason) => {
+      if (active) {
+        setDetails(null);
+        setError(reason.message || "Could not open the quote.");
+        setBusy(false);
+      }
+    });
+    return () => { active = false; };
+  }, [quoteId, revision]);
+  return <section className="panel enquiry-page-frame quotation-page-frame">
+    <header className="panel-head">
+      <div><p>Quotation workspace</p><h2>{details ? `${details.quote.quoteNumber} · Version ${details.quote.quoteVersion}` : "Quotation"}</h2></div>
+      <button type="button" className="button secondary" onClick={() => {
+        window.history.pushState(null, "", "/quotations");
+        window.scrollTo(0, 0);
+      }}><ArrowLeft /> Back to quotations</button>
+    </header>
+    {!details ? <p role={error ? "alert" : "status"}>{error || "Loading quotation…"}</p> :
+      <QuoteDetail key={details.quote.version} s={{ actor, quoteTemplates: details.quoteTemplates }}
+        q={details.quote} customer={details.customer} enquiry={details.enquiry} booking={details.booking} busy={busy} error={error}
+        run={async (action: () => Promise<unknown>, openResult = false) => {
+          setBusy(true); setError("");
+          try {
+            const result = await action();
+            if (openResult && typeof result === "string") openQuotation(result);
+            else setRevision((value) => value + 1);
+            return true;
+          } catch (reason) {
+            setError(reason instanceof Error ? reason.message : "Could not save the quote.");
+            setBusy(false);
+            return false;
+          }
+        }} />}
+  </section>;
+}
+
+export function PackageTemplates({ actor }: { actor: { role: string } }) {
+  const [list, setList] = useState<{ templates: Row[]; hasMore: boolean } | null>(null);
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [revision, setRevision] = useState(0);
+  const [editor, setEditor] = useState<{ row?: Row; name: string; active: boolean; content: any } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    let active = true;
+    const params = new URLSearchParams({ resource: "package-templates", page: String(page), q: query });
+    fetch(`/api/crm?${params}`, { cache: "no-store" }).then(async (response) => {
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not load package templates.");
+      if (active) setList(body);
+    }).catch((reason) => { if (active) setError(reason.message); });
+    return () => { active = false; };
+  }, [page, query, revision]);
+  async function open(row?: Row) {
+    setError(""); setNotice("");
+    if (!row) {
+      setEditor({ name: "", active: true, content: { ...defaultContent(), adults: 0 } });
+      window.scrollTo(0, 0);
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/crm?resource=package-templates&id=${encodeURIComponent(row._id)}`, { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not open the template.");
+      const template = body.template;
+      setEditor({ row: template, name: template.name, active: template.active,
+        content: { ...defaultContent(), ...template.content, destinations: template.content?.destinations || template.destination || "" } });
+      window.scrollTo(0, 0);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not open the template.");
+    } finally { setBusy(false); }
+  }
+  async function save() {
+    if (!editor || busy) return;
+    if (editor.name.trim().length < 2) { setError("Enter a template name with at least two characters."); return; }
+    setBusy(true); setError("");
+    try {
+      await api("quote-template", {
+        id: editor.row?._id, version: editor.row?.version, name: editor.name,
+        destination: editor.content.destinations, active: editor.active, content: editor.content,
+      });
+      setNotice(editor.row ? "Package template updated." : "Package template created.");
+      setList(null); setRevision((value) => value + 1); setEditor(null);
+      window.scrollTo(0, 0);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not save the package template.");
+    } finally { setBusy(false); }
+  }
+  return <section className="panel enquiry-page-frame quotation-page-frame">
+    <header className="panel-head">
+      <div><h2>{editor ? (editor.row ? "Edit package template" : "New package template") : "Package templates"}</h2>
+        <p>Reuse itinerary, stays, transport and pricing in new quotations.</p></div>
+      <button className={editor ? "button secondary" : "button primary"} disabled={busy} onClick={() => {
+        if (editor) { setEditor(null); setError(""); } else void open();
+      }}>{editor ? <><ArrowLeft /> Back to templates</> : <><Plus /> New template</>}</button>
+    </header>
+    {error && <p className="form-error" role="alert">{error}</p>}
+    {notice && <p role="status">{notice}</p>}
+    {editor ? <>
+      <div className="form-grid">
+        <Field label="Template name" value={editor.name} maxLength={160} set={(name: string) => setEditor({ ...editor, name })} placeholder="Kerala honeymoon · 5 days" />
+        <label className="check"><input type="checkbox" checked={editor.active} onChange={(event) => setEditor({ ...editor, active: event.target.checked })} /> Available in quotations</label>
+      </div>
+      <QuoteEditor templateMode q={{ status: "Template" }} s={{ actor }}
+        content={editor.content} setContent={(content: any) => setEditor({ ...editor, content })}
+        busy={busy} save={save} />
+    </> : <>
+      <form className="package-template-search" onSubmit={(event) => {
+        event.preventDefault();
+        if (page === 1 && query === search.trim()) return;
+        setError(""); setPage(1); setQuery(search.trim()); setList(null);
+      }}>
+        <label className="field">Search templates<input value={search} onChange={(event) => setSearch(event.target.value)} maxLength={100} placeholder="Name or destination" /></label>
+        <button className="button secondary">Search</button>
+      </form>
+      {!list ? (!error && <p role="status"><RefreshCw className="spin" /> Loading templates…</p>) : <>
+        {!list.templates.length && <p>No package templates found.</p>}
+        <ul className="package-template-list">
+          {list.templates.map((row) => <li key={row._id}>
+            <div><b>{row.name}</b><small>{row.destination || "Any destination"}</small></div>
+            <Status value={row.active ? "Active" : "Inactive"} />
+            <button className="button secondary" disabled={busy} onClick={() => void open(row)} aria-label={`Edit ${row.name}`}>Edit <ArrowRight /></button>
+          </li>)}
+        </ul>
+        {(page > 1 || list.hasMore) && <div className="quote-actions">
+          <button className="button secondary" disabled={page === 1 || busy} onClick={() => { setList(null); setPage(page - 1); }}>Previous</button>
+          <span>Page {page}</span>
+          <button className="button secondary" disabled={!list.hasMore || busy} onClick={() => { setList(null); setPage(page + 1); }}>Next</button>
+        </div>}
+      </>}
+    </>}
+  </section>;
+}
+
+function QuoteDetail({ s, q, customer, enquiry, booking, busy, run, error }: any) {
   const editable =
-    s.actor.role === "owner" &&
+    s.actor.role !== "operations" &&
     ["Requested", "Needs information", "Draft"].includes(q.status);
+  const canShare = s.actor.role === "owner" || q.assigneeId === s.actor.id;
   const [content, setContent] = useState<any>({
     ...defaultContent(),
     ...q.content,
@@ -328,32 +484,16 @@ function QuoteDetail({ s, q, customer, enquiry, close, busy, run }: any) {
   const [panel, setPanel] = useState<
     "editor" | "preview" | "share" | "decision" | "return" | "revise"
   >(editable ? "editor" : "preview");
+  const [decisionType, setDecisionType] = useState("Accepted");
   const [template, setTemplate] = useState(
     s.quoteTemplates?.find((x: Row) => x.active)?._id || "",
   );
-  const total = content.options.reduce(
-    (n: number, x: any) =>
-      n +
-      (Number(x.unitPrice || 0) * Number(x.quantity || 0) -
-        Number(x.discount || 0) +
-        Number(x.taxAmount || 0)),
-    0,
-  );
-  async function save() {
-    await run(
-      () => api("quote-save", content, { id: q._id, version: q.version }),
-      true,
-    );
-  }
-  async function action(name: string, data: any, closeAfter = true) {
-    await run(() => api(name, data), closeAfter);
-  }
+  const dirty = JSON.stringify(content) !== JSON.stringify({ ...defaultContent(), ...q.content });
+  const save = () => run(() => api("quote-save", content, { id: q._id, version: q.version }));
+  const action = (name: string, data: any) => run(() => api(name, data), name === "quote-revise");
   return (
-    <Modal
-      title={`${q.quoteNumber} · Version ${q.quoteVersion}`}
-      close={close}
-      wide
-    >
+    <>
+      {error && <p className="form-error" role="alert">{error}</p>}
       <div className="quote-detail-head">
         <div>
           <Status value={q.status} /> <Status value={q.pdfStatus} />
@@ -378,6 +518,20 @@ function QuoteDetail({ s, q, customer, enquiry, close, busy, run }: any) {
           )}
         </div>
       </div>
+      {q.status === "Accepted" && <section className="info-note quotation-booking" aria-label="Trip status">
+        <div><b>{booking ? `${booking.bookingNumber} · ${booking.status}` : "Customer accepted"}</b>
+          <p>{booking?.status === "Trip completed" ? "The trip has been marked complete in Operations." : booking ? "Follow the booking for the next step." : "Next step: create the booking for the accepted option."}</p>
+        </div>
+        {booking ? <div className="quote-actions">
+          {booking.invoice?.documentId && <a className="button secondary" href={`/api/documents/finance/${encodeURIComponent(booking.invoice.documentId)}`} download><Download /> Download invoice</a>}
+          <button className="button secondary" onClick={() => window.history.pushState(null, "", "/bookings")}>View bookings</button>
+          {canShare && <button className="button secondary" onClick={() => window.history.pushState(null, "", "/settlements")}>Booking changes</button>}
+        </div> :
+          canShare && <button className="button primary" disabled={busy} onClick={() => action("booking-create", { quoteId: q._id })}>Create booking</button>}
+      </section>}
+      {(q.status === "Changes requested" || q.customerDecision === "Changes requested") && <div className="info-note">
+        <div><b>Customer requested changes</b><p>{q.decisionReason}</p>{q.decisionReference && <p>Reference · {q.decisionReference}</p>}</div>
+      </div>}
       {q.status === "Needs information" && (
         <div className="warning-box">
           <b>Owner needs more information</b>
@@ -395,13 +549,14 @@ function QuoteDetail({ s, q, customer, enquiry, close, busy, run }: any) {
           busy={busy}
           save={save}
           action={action}
+          dirty={dirty}
         />
       )}{" "}
       {panel === "preview" && (
         <QuotePreview
           q={q}
           content={q.snapshot?.content || content}
-          total={total}
+          customer={customer?.name || q.snapshot?.customer?.name}
         />
       )}{" "}
       {panel === "share" && (
@@ -413,8 +568,10 @@ function QuoteDetail({ s, q, customer, enquiry, close, busy, run }: any) {
       )}{" "}
       {panel === "decision" && (
         <Decision
+          key={decisionType}
           q={q}
           busy={busy}
+          initialDecision={decisionType}
           submit={(data: any) => action("quote-decision", data)}
         />
       )}{" "}
@@ -442,17 +599,21 @@ function QuoteDetail({ s, q, customer, enquiry, close, busy, run }: any) {
               Return for information
             </button>
           )}
-        {s.actor.role !== "operations" && q.status === "Needs information" && (
+        {canShare && q.status === "Needs information" && (
           <ResubmitButton q={q} busy={busy} run={run} />
         )}{" "}
-        {q.pdfStatus === "Ready" && (
+        {canShare && q.pdfStatus === "Ready" && (
           <a
             className="button secondary"
-            href={`/api/documents/quote/${q._id}`}
-            target="_blank"
-            rel="noreferrer"
+            href={`/api/documents/quote/${encodeURIComponent(q._id)}`}
+            download
           >
-            <Download /> Open approved PDF
+            <Download /> Download quotation
+          </a>
+        )}
+        {canShare && q.pdfStatus === "Ready" && (
+          <a className="button secondary" href={`/api/documents/quote/${encodeURIComponent(q._id)}/package`} download>
+            <Download /> Download detailed package
           </a>
         )}
         {s.actor.role === "owner" && q.pdfStatus === "Failed" && (
@@ -464,19 +625,22 @@ function QuoteDetail({ s, q, customer, enquiry, close, busy, run }: any) {
             <RefreshCw /> Retry PDF
           </button>
         )}
-        {["Approved", "Sent"].includes(q.status) && q.pdfStatus === "Ready" && (
+        {canShare && ["Approved", "Sent"].includes(q.status) && q.pdfStatus === "Ready" && (
           <button className="button primary" onClick={() => setPanel("share")}>
             <Send /> Record sharing
           </button>
         )}
-        {q.status === "Sent" && (
+        {canShare && q.status === "Sent" && (
           <button
             className="button primary"
-            onClick={() => setPanel("decision")}
+            onClick={() => { setDecisionType("Accepted"); setPanel("decision"); }}
           >
-            <Check /> Customer decision
+            <Check /> Record customer reply
           </button>
         )}
+        {canShare && q.status === "Sent" && <button className="button secondary" onClick={() => { setDecisionType("Changes requested"); setPanel("decision"); }}>
+          <FilePenLine /> Customer asked for changes
+        </button>}
         {s.actor.role === "owner" &&
           [
             "Approved",
@@ -491,11 +655,11 @@ function QuoteDetail({ s, q, customer, enquiry, close, busy, run }: any) {
               className="button secondary"
               onClick={() => setPanel("revise")}
             >
-              <Copy /> Create revision
+              <Copy /> Create revised quote
             </button>
           )}
       </div>
-    </Modal>
+    </>
   );
 }
 
@@ -509,8 +673,15 @@ function QuoteEditor({
   busy,
   save,
   action,
+  dirty = false,
+  templateMode = false,
 }: any) {
   const [templateName, setTemplateName] = useState("");
+  const [replaceTemplate, setReplaceTemplate] = useState(false);
+  const canApprove = !templateMode && s.actor.role === "owner" && q.status === "Draft";
+  const parsed = canApprove ? quoteContentSchema.safeParse(content) : null;
+  const readiness = parsed?.success ? quoteApprovalIssues(parsed.data) : [];
+  const hasPackageWork = ["itinerary", "stays", "transport", "options", "optionalExtras", "inclusions", "exclusions"].some((key) => content[key]?.length);
   const upd = (key: string, value: any) =>
     setContent({ ...content, [key]: value });
   const add = (key: string, value: any) => upd(key, [...content[key], value]);
@@ -528,21 +699,28 @@ function QuoteEditor({
     );
   return (
     <div className="quote-editor">
-      <section className="editor-section">
+      {canApprove && (readiness.length > 0 || parsed?.success === false) && (
+        <aside className="warning-box quote-approval-checklist" aria-label="Approval checklist">
+          <b>Before approving this quotation</b>
+          {readiness.length > 0 ? <ul>{readiness.map((issue) => (
+            <li key={issue.message}><a href={`#quote-${issue.section}`}>{issue.message}</a></li>
+          ))}</ul> : <p>{parsed?.error?.issues[0]?.message || "Review the draft fields."}</p>}
+        </aside>
+      )}
+      {!templateMode && <section className="editor-section">
         <div className="editor-title">
           <div>
             <b>Package templates</b>
             <small>
-              To create one, complete the quotation below, enter a clear
-              template name, then save the current quote. Templates are only
-              starting points—verify rates and availability every time.
+              Use a template as a starting point, then check dates, rates and availability. Edits stay on this quote.
             </small>
           </div>
         </div>
         <div className="template-line">
           <select
             value={template}
-            onChange={(e) => setTemplate(e.target.value)}
+            aria-label="Package template"
+            onChange={(e) => { setTemplate(e.target.value); setReplaceTemplate(false); }}
           >
             <option value="">Choose a template</option>
             {s.quoteTemplates
@@ -555,18 +733,19 @@ function QuoteEditor({
           </select>
           <button
             className="button secondary"
-            disabled={!template || busy}
+            disabled={!template || busy || (hasPackageWork && !replaceTemplate)}
             onClick={() =>
               action("quote-template-apply", {
                 quoteId: q._id,
                 version: q.version,
                 templateId: template,
+                replace: replaceTemplate,
               })
             }
           >
-            Apply
+            Use template
           </button>
-          <input
+          {s.actor.role === "owner" && <><input
             value={templateName}
             onChange={(e) => setTemplateName(e.target.value)}
             aria-label="New package template name"
@@ -584,20 +763,21 @@ function QuoteEditor({
                   active: true,
                   content,
                 },
-                false,
               );
               setTemplateName("");
             }}
           >
-            Save current quote
-          </button>
+            Save as template
+          </button></>}
         </div>
-      </section>
-      <section className="editor-section">
+        {hasPackageWork && template && <label className="check"><input type="checkbox" checked={replaceTemplate} onChange={(event) => setReplaceTemplate(event.target.checked)} /> Replace the current package sections</label>}
+        {s.actor.role === "owner" && <small>Before saving a template, remove any customer names or private information from free-text fields.</small>}
+      </section>}
+      <section className="editor-section" id="quote-overview">
         <SectionTitle n="01" title="Package overview" />
         <div className="form-grid">
           <Field
-            label="Quotation title"
+            label={templateMode ? "Package title" : "Quotation title"}
             value={content.title}
             set={(v: string) => upd("title", v)}
             span
@@ -607,7 +787,7 @@ function QuoteEditor({
             value={content.destinations}
             set={(v: string) => upd("destinations", v)}
           />
-          <Select
+          {!templateMode && <><Select
             label="Date scope"
             value={content.dateScope}
             set={(v: string) => upd("dateScope", v)}
@@ -653,7 +833,7 @@ function QuoteEditor({
             type="number"
             value={content.infants}
             set={(v: string) => upd("infants", Number(v))}
-          />
+          /></>}
           <Field
             label="Customer-facing summary"
             value={content.summary}
@@ -720,12 +900,12 @@ function QuoteEditor({
               value={x.day}
               set={(v: string) => change("itinerary", i, "day", Number(v))}
             />
-            <Field
+            {!templateMode && <Field
               label="Date"
               type="date"
               value={x.date}
               set={(v: string) => change("itinerary", i, "date", v)}
-            />
+            />}
             <Field
               label="Title"
               value={x.title}
@@ -770,7 +950,7 @@ function QuoteEditor({
           <MiniEmpty text="Add days only when a day-wise plan is useful. Hotel-only quotes can remain simple." />
         )}
       </section>
-      <section className="editor-section">
+      <section className="editor-section" id="quote-stays">
         <SectionTitle
           n="03"
           title="Stays and rooms"
@@ -814,18 +994,18 @@ function QuoteEditor({
               value={x.property}
               set={(v: string) => change("stays", i, "property", v)}
             />
-            <Field
-              label="Check-in"
+            {!templateMode && <><Field
+              label="Check-in date"
               type="date"
               value={x.checkIn}
               set={(v: string) => change("stays", i, "checkIn", v)}
             />
             <Field
-              label="Check-out"
+              label="Check-out date"
               type="date"
               value={x.checkOut}
               set={(v: string) => change("stays", i, "checkOut", v)}
-            />
+            /></>}
             <Field
               label="Room category"
               value={x.roomType}
@@ -856,15 +1036,12 @@ function QuoteEditor({
                 ...content.options.map((o: any) => [o.id, o.name]),
               ]}
             />
-            <Field
-              label="Notes / extra bed"
-              value={[x.extraBed, x.notes].filter(Boolean).join(" · ")}
-              set={(v: string) => change("stays", i, "notes", v)}
-            />
+            <Field label="Extra bed" value={x.extraBed} set={(v: string) => change("stays", i, "extraBed", v)} />
+            <Field label="Stay notes" value={x.notes} set={(v: string) => change("stays", i, "notes", v)} span />
           </ArrayCard>
         ))}
       </section>
-      <section className="editor-section">
+      <section className="editor-section" id="quote-transport">
         <SectionTitle
           n="04"
           title="Transport and customer-held tickets"
@@ -945,12 +1122,12 @@ function QuoteEditor({
               value={x.to}
               set={(v: string) => change("transport", i, "to", v)}
             />
-            <Field
+            {!templateMode && <Field
               label="Date"
               type="date"
               value={x.date}
               set={(v: string) => change("transport", i, "date", v)}
-            />
+            />}
             <Field
               label="Local time"
               value={x.time}
@@ -963,10 +1140,12 @@ function QuoteEditor({
               set={(v: string) => change("transport", i, "timeZone", v)}
             />
             <Field
-              label="Provider / reference"
-              value={[x.provider, x.reference].filter(Boolean).join(" / ")}
-              set={(v: string) => change("transport", i, "reference", v)}
+              label="Provider"
+              value={x.provider}
+              set={(v: string) => change("transport", i, "provider", v)}
             />
+            {!templateMode && <Field label="Booking reference" value={x.reference}
+              set={(v: string) => change("transport", i, "reference", v)} />}
             <Field
               label="Details"
               value={x.details}
@@ -991,7 +1170,7 @@ function QuoteEditor({
           </ArrayCard>
         ))}
       </section>
-      <section className="editor-section">
+      <section className="editor-section" id="quote-pricing">
         <SectionTitle
           n="05"
           title="Package options and pricing"
@@ -1020,15 +1199,10 @@ function QuoteEditor({
             </button>
           }
         />
-        {content.options.map((x: any, i: number) => {
-          const final =
-            Number(x.unitPrice || 0) * Number(x.quantity || 0) -
-            Number(x.discount || 0) +
-            Number(x.taxAmount || 0);
-          return (
+        {content.options.map((x: any, i: number) => (
             <ArrayCard
               key={x.id}
-              title={`${x.name} · ${money(final, content.currency)}`}
+              title={`${x.name} · ${optionPrice(x, content.currency)}`}
               remove={() => remove("options", i)}
             >
               <Field
@@ -1076,13 +1250,13 @@ function QuoteEditor({
                 value={x.taxAmount}
                 set={(v: string) => change("options", i, "taxAmount", v)}
               />
-              <Field
+              {s.actor.role === "owner" && <Field
                 label="Internal supplier cost"
                 type="number"
                 step="0.01"
                 value={x.internalCost}
                 set={(v: string) => change("options", i, "internalCost", v)}
-              />
+              />}
               <Field
                 label="Hotel alternative"
                 value={x.hotel}
@@ -1107,19 +1281,19 @@ function QuoteEditor({
                 span
               />
             </ArrayCard>
-          );
-        })}
+        ))}
         <div className="price-total">
-          <span>Visible option total preview</span>
-          <b>{money(totalFromOptions(content.options), content.currency)}</b>
+          {content.options.length === 1
+            ? <><span>Option total</span><b>{optionPrice(content.options[0], content.currency)}</b></>
+            : <span>{content.options.length ? "Each option is priced separately." : "Add a priced option before approving."}</span>}
           <small>
             Internal costs and margin never appear in the customer PDF or Sales
             response.
           </small>
         </div>
       </section>
-      <section className="editor-section">
-        <SectionTitle n="06" title="Inclusions, payment and terms" />
+      <section className="editor-section" id="quote-terms">
+        <SectionTitle n="06" title="Inclusions and terms" />
         <div className="form-grid">
           <Field
             label="Inclusions (one per line)"
@@ -1139,32 +1313,12 @@ function QuoteEditor({
             maxLength={3}
             set={(v: string) => upd("currency", v.toUpperCase())}
           />
-          <Field
-            label="Advance amount"
-            type="number"
-            step="0.01"
-            value={content.advanceAmount}
-            set={(v: string) => upd("advanceAmount", v)}
-          />
-          <Field
-            label="Advance timing"
-            value={content.advanceDue}
-            set={(v: string) => upd("advanceDue", v)}
-            placeholder="Within 2 days of acceptance"
-          />
-          <Field
-            label="Valid until"
+          {!templateMode && <Field
+            label="Quotation valid until"
             type="date"
             value={content.validUntil}
             set={(v: string) => upd("validUntil", v)}
-          />
-          <Field
-            label="Balance payment terms"
-            value={content.balanceTerms}
-            set={(v: string) => upd("balanceTerms", v)}
-            area
-            span
-          />
+          />}
           <Field
             label="Cancellation terms"
             value={content.cancellationTerms}
@@ -1172,31 +1326,31 @@ function QuoteEditor({
             area
             span
           />
-          <Field
+          {!templateMode && <Field
             label="Customer-facing notes"
             value={content.customerNotes}
             set={(v: string) => upd("customerNotes", v)}
             area
-          />
-          <Field
+          />}
+          {!templateMode && s.actor.role === "owner" && <Field
             label="Owner-only internal notes"
             value={content.internalNotes}
             set={(v: string) => upd("internalNotes", v)}
             area
-          />
+          />}
         </div>
       </section>
       <div className="sticky-save">
         <span>
-          Drafts can be incomplete. Approval runs the full business-rule check.
+          {templateMode ? "Dates and traveller counts are added on each quotation." : dirty ? "Save your changes before approving." : "Save the draft before sending it for approval."}
         </span>
         <button className="button secondary" disabled={busy} onClick={save}>
-          Save draft
+          {templateMode ? "Save package template" : "Save draft"}
         </button>
-        {q.status === "Draft" && (
+        {canApprove && (
           <button
             className="button primary"
-            disabled={busy}
+            disabled={busy || dirty || !parsed?.success || readiness.length > 0}
             onClick={() =>
               action("quote-approve", { quoteId: q._id, version: q.version })
             }
@@ -1209,12 +1363,24 @@ function QuoteEditor({
   );
 }
 
-function QuotePreview({ q, content, total }: any) {
+function QuotePreview({ q, content: rawContent, customer }: any) {
+  const content = packageDocument(rawContent);
+  const optionNames = new Map<string, string>(content.options.map((option: any) => [option.id, option.name]));
+  const travel = content.dateScope === "Exact"
+    ? [packageDate(content.startDate), packageDate(content.endDate)].filter(Boolean).join(" – ")
+    : content.dateLabel;
+  const facts = [
+    ["Prepared for", customer],
+    ["Destination", content.destinations],
+    ["Travel dates", travel || "To be confirmed"],
+    ["Travellers", [content.adults > 0 && `${content.adults} ${content.adults === 1 ? "adult" : "adults"}`, content.childrenAges && `Children: ${content.childrenAges}`, content.infants > 0 && `${content.infants} ${content.infants === 1 ? "infant" : "infants"}`].filter(Boolean).join(" · ") || "To be confirmed"],
+    ["Valid until", packageDate(content.validUntil)],
+  ].filter(([, value]) => Boolean(value));
   return (
-    <div className="quote-preview">
+    <article className="quote-preview package-preview">
       <header>
         <div>
-          <span>EARLYBIRD TRAVEL</span>
+          <Image src="/earlybird-vacations-logo.png" width={186} height={62} alt="Early Bird Vacations" className="package-logo" />
           <h2>{content.title || "Untitled quotation"}</h2>
           <p>
             {q.quoteNumber} · Version {q.quoteVersion}
@@ -1222,65 +1388,79 @@ function QuotePreview({ q, content, total }: any) {
         </div>
         <Status value={q.status} />
       </header>
-      <section className="preview-facts">
-        <div>
-          <small>Destination</small>
-          <b>{content.destinations || "Not set"}</b>
-        </div>
-        <div>
-          <small>Travel</small>
-          <b>
-            {content.dateScope === "Exact"
-              ? `${content.startDate} - ${content.endDate}`
-              : content.dateLabel || "Indicative"}
-          </b>
-        </div>
-        <div>
-          <small>Travellers</small>
-          <b>
-            {content.adults} adult(s)
-            {content.childrenAges ? ` · ${content.childrenAges}` : ""}
-          </b>
-        </div>
-      </section>
+      <dl className="preview-facts">
+        {facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+      </dl>
       {content.summary && <p className="lead-copy">{content.summary}</p>}
-      <PreviewSection title="Package options">
+      {content.services.length > 0 && <PreviewSection title="Services covered">
+        <p>{content.services.join(" · ")}</p>
+      </PreviewSection>}
+      {content.options.length > 0 && <PreviewSection title="Package options">
         {content.options.map((x: any) => (
           <div className="preview-option" key={x.id}>
             <div>
               <b>{x.name}</b>
-              <p>{x.description || x.hotel || "Package option"}</p>
+              {x.description && <p>{x.description}</p>}
+              {x.hotel && <p>Stay · {x.hotel}</p>}
+              {x.mealPlan && <p>Meal plan · {x.mealPlan}</p>}
             </div>
-            <strong>
-              {x.totalMinor !== undefined
-                ? money(x.totalMinor, content.currency)
-                : money(
-                    Number(x.unitPrice || 0) * Number(x.quantity || 0) -
-                      Number(x.discount || 0) +
-                      Number(x.taxAmount || 0),
-                    content.currency,
-                  )}
-            </strong>
           </div>
         ))}
-      </PreviewSection>
+      </PreviewSection>}
+      {content.stays.length > 0 && <PreviewSection title="Accommodation and meal plan">
+        <div className="package-detail-list">
+          {content.stays.map((stay: any) => <div className="package-detail-row" key={stay.id}>
+            <div><b>{stay.property || "Stay to be confirmed"}</b><p>{[stay.city, optionNames.get(stay.optionId)].filter(Boolean).join(" · ")}</p></div>
+            <div><b>{[packageDate(stay.checkIn), packageDate(stay.checkOut)].filter(Boolean).join(" → ") || "Stay dates to be confirmed"}</b>
+              <p>{[stay.rooms > 0 && `${stay.rooms} ${stay.rooms === 1 ? "room" : "rooms"}`, stay.roomType, stay.occupancy, stay.extraBed].filter(Boolean).join(" · ")}</p>
+              {stay.mealPlan && <p>Meal plan · {stay.mealPlan}</p>}
+              {stay.notes && <p>{stay.notes}</p>}
+            </div>
+          </div>)}
+        </div>
+      </PreviewSection>}
+      {content.transport.length > 0 && <PreviewSection title="Transport and transfers">
+        <div className="package-detail-list">
+          {content.transport.map((leg: any) => <div className="package-detail-row" key={leg.id}>
+            <div><b>{leg.mode}{leg.from || leg.to ? ` · ${[leg.from, leg.to].filter(Boolean).join(" → ")}` : ""}</b>
+              <p>{[leg.responsibility, optionNames.get(leg.optionId)].filter(Boolean).join(" · ")}</p></div>
+            <div>
+              {[packageDate(leg.date), leg.time, leg.time ? leg.timeZone : ""].some(Boolean) && <b>{[packageDate(leg.date), leg.time, leg.time ? leg.timeZone : ""].filter(Boolean).join(" · ")}</b>}
+              {leg.provider && <p>{leg.provider}</p>}
+              {leg.passengers && <p>Passengers · {leg.passengers}</p>}
+              {leg.details && <p>{leg.details}</p>}
+              {leg.responsibility === "Customer booked" && <p>Customer booked · outside the agency package price</p>}
+            </div>
+          </div>)}
+        </div>
+      </PreviewSection>}
       {content.itinerary.length > 0 && (
         <PreviewSection title="Day-wise itinerary">
-          {content.itinerary.map((x: any) => (
+          {content.itinerary.map((x) => (
             <div className="preview-day" key={x.id}>
               <span>{x.day}</span>
               <div>
-                <b>{x.title || x.city}</b>
-                <p>
-                  {[x.activities, x.transfers, x.stay, x.meals]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </p>
+                <small>{[x.city, packageDate(x.date)].filter(Boolean).join(" · ")}</small>
+                <b>{x.title || x.city || `Day ${x.day}`}</b>
+                {x.activities && <p>{x.activities}</p>}
+                {x.transfers && <p><strong>Transfers</strong> · {x.transfers}</p>}
+                {x.stay && <p><strong>Stay</strong> · {x.stay}</p>}
+                {x.meals && <p><strong>Meals</strong> · {x.meals}</p>}
+                {x.notes && <p>{x.notes}</p>}
               </div>
             </div>
           ))}
         </PreviewSection>
       )}
+      {content.optionalExtras.length > 0 && <PreviewSection title="Optional extras">
+        <div className="package-detail-list">
+          {content.optionalExtras.map((extra: any) => <div className="package-detail-row" key={extra.id}>
+            <div><b>{extra.name}</b>{extra.description && <p>{extra.description}</p>}</div>
+            <div><b>{extra.included ? "Included" : "Optional"}</b>
+            </div>
+          </div>)}
+        </div>
+      </PreviewSection>}
       <div className="preview-columns">
         <PreviewSection title="Inclusions">
           <ul>
@@ -1297,17 +1477,10 @@ function QuotePreview({ q, content, total }: any) {
           </ul>
         </PreviewSection>
       </div>
-      <PreviewSection title="Payment and cancellation">
-        <p>
-          <b>Advance:</b>{" "}
-          {content.advanceAmountMinor !== undefined
-            ? money(content.advanceAmountMinor, content.currency)
-            : money(content.advanceAmount, content.currency)}{" "}
-          · {content.advanceDue}
-        </p>
-        <p>{content.balanceTerms}</p>
+      {content.cancellationTerms && <PreviewSection title="Cancellation terms">
         <p>{content.cancellationTerms}</p>
-      </PreviewSection>
+      </PreviewSection>}
+      {content.customerNotes && <PreviewSection title="Useful information"><p>{content.customerNotes}</p></PreviewSection>}
       {q.pdfStatus === "Queued" && (
         <div className="info-note">
           <FileClock />
@@ -1320,7 +1493,7 @@ function QuotePreview({ q, content, total }: any) {
           <p>The approved snapshot is unchanged. Owner can retry.</p>
         </div>
       )}
-    </div>
+    </article>
   );
 }
 function PreviewSection({ title, children }: any) {
@@ -1396,12 +1569,13 @@ function Share({ q, busy, submit }: any) {
     </form>
   );
 }
-function Decision({ q, busy, submit }: any) {
+function Decision({ q, busy, submit, initialDecision }: any) {
+  const options = q.snapshot?.content?.options || [];
   const [data, setData] = useState({
     quoteId: q._id,
     version: q.version,
-    decision: "Accepted",
-    selectedOptionId: q.snapshot?.content?.options?.[0]?.id || "",
+    decision: initialDecision,
+    selectedOptionId: options.length === 1 ? options[0].id : "",
     decidedAt: local(new Date().toISOString()),
     channel: "WhatsApp",
     reference: "",
@@ -1412,27 +1586,29 @@ function Decision({ q, busy, submit }: any) {
       className="form-grid action-form"
       onSubmit={(e) => {
         e.preventDefault();
-        submit({ ...data, decidedAt: iso(data.decidedAt) });
+        submit({ ...data, selectedOptionId: data.decision === "Accepted" ? data.selectedOptionId : "", decidedAt: iso(data.decidedAt) });
       }}
     >
-      <h3 className="span">Customer decision</h3>
+      <h3 className="span">{data.decision === "Changes requested" ? "What should change?" : "Customer reply"}</h3>
       <Select
         label="Decision"
         value={data.decision}
         set={(v: string) => setData({ ...data, decision: v })}
         options={["Accepted", "Rejected", "Changes requested"]}
       />
-      {data.decision === "Accepted" && (
+      {data.decision === "Accepted" && options.length > 1 && (
         <Select
-          label="Exact accepted option"
+          label="Package the customer chose"
           value={data.selectedOptionId}
           set={(v: string) => setData({ ...data, selectedOptionId: v })}
-          options={(q.snapshot?.content?.options || []).map((x: any) => [
+          options={[["", "Choose a package"], ...options.map((x: any) => [
             x.id,
             x.name,
-          ])}
+          ])]}
         />
       )}
+      {data.decision === "Accepted" && options.length === 1 && <p className="span">Package accepted · {options[0].name}</p>}
+      {data.decision === "Changes requested" && <p className="span">Save what the customer asked for. The Owner can then create a revised quote.</p>}
       <Field
         label="Decision time"
         type="datetime-local"
@@ -1455,14 +1631,14 @@ function Decision({ q, busy, submit }: any) {
         label={
           data.decision === "Accepted"
             ? "Acceptance note"
-            : "Reason / requested changes"
+            : data.decision === "Changes requested" ? "Changes requested by the customer" : "Why the customer declined"
         }
         value={data.reason}
         set={(v: string) => setData({ ...data, reason: v })}
         area
         span
       />
-      <Foot busy={busy} text="Save decision" />
+      <Foot busy={busy} text={data.decision === "Changes requested" ? "Save change request" : "Save reply"} disabled={data.decision === "Accepted" ? !data.selectedOptionId || (!data.reference.trim() && !data.reason.trim()) : !data.reason.trim()} />
     </form>
   );
 }
@@ -1500,7 +1676,7 @@ function ReturnInfo({ q, busy, submit }: any) {
   );
 }
 function Revise({ q, busy, submit }: any) {
-  const [reason, setReason] = useState("");
+  const [reason, setReason] = useState(q.status === "Changes requested" ? q.decisionReason || "" : "");
   return (
     <form
       className="form-grid action-form"
@@ -1545,7 +1721,6 @@ function ResubmitButton({ q, busy, run }: any) {
                 note,
                 dueAt: iso(due),
               }),
-            true,
           )
         }
       >
@@ -1669,14 +1844,4 @@ function lines(v: string) {
     .split(/\r?\n/)
     .map((x) => x.trim())
     .filter(Boolean);
-}
-function totalFromOptions(options: any[]) {
-  return options.reduce(
-    (n, x) =>
-      n +
-      (Number(x.unitPrice || 0) * Number(x.quantity || 0) -
-        Number(x.discount || 0) +
-        Number(x.taxAmount || 0)),
-    0,
-  );
 }

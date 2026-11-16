@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { indiaInput } from './workspace-time';
 
 const short=z.string().trim().max(300).default('');
 const long=z.string().trim().max(10000).default('');
@@ -30,17 +31,72 @@ export const templateSchema=z.object({id:z.string().optional(),name:z.string().t
 
 export function minor(value:string){const input=String(value||'0');if(!/^\d{1,12}(\.\d{1,2})?$/.test(input))throw new Error('Use a non-negative amount with at most two decimals.');const [whole='0',decimal='']=input.split('.');const amount=BigInt(whole)*100n+BigInt(decimal.padEnd(2,'0'));if(amount>BigInt(Number.MAX_SAFE_INTEGER))throw new Error('Amount is too large.');return Number(amount);}
 export function displayMinor(value:number,currency='INR'){return new Intl.NumberFormat('en-IN',{style:'currency',currency,maximumFractionDigits:2}).format(value/100)}
-export function optionAmounts(option:z.infer<typeof quoteOption>){const unit=minor(option.unitPrice),discount=minor(option.discount),tax=minor(option.taxAmount),cost=minor(option.internalCost);const subtotal=Math.round(unit*option.quantity);const total=subtotal-discount+tax;if(total<0)throw new Error(`Option ${option.name}: discount cannot exceed subtotal plus tax.`);return {unitPriceMinor:unit,discountMinor:discount,taxAmountMinor:tax,internalCostMinor:cost,subtotalMinor:subtotal,totalMinor:total,estimatedMarginMinor:total-cost};}
-export function assertApproverReady(content:z.infer<typeof quoteContentSchema>){
- const issues:string[]=[];
- if(!content.title)issues.push('quotation title');if(!content.destinations)issues.push('destination');if(!content.adults&&!content.childrenAges&&!content.infants)issues.push('traveller count');if(!content.services.length)issues.push('services');
- if(content.dateScope==='Exact'){if(!content.startDate||!content.endDate||content.endDate<content.startDate)issues.push('valid exact start and end dates');}else if(!content.dateLabel)issues.push('clearly labelled indicative dates');
- if(content.services.includes('Accommodation')&&!content.stays.length)issues.push('at least one stay');if(content.services.includes('Accommodation')&&content.stays.some(s=>!s.property||!s.checkIn||!s.checkOut||s.checkOut<=s.checkIn||!s.rooms))issues.push('complete hotel dates, rooms and property');
- if(content.services.some(x=>['Car / transfer','Flight coordination','Train coordination','Bus coordination','Ferry / boat'].includes(x))&&!content.transport.length)issues.push('transport responsibility and route');
- if(!content.options.length)issues.push('at least one priced option');if(content.options.some(x=>!x.name||minor(x.unitPrice)<=0))issues.push('valid option names and prices');if(!content.inclusions.length)issues.push('inclusions');if(!content.exclusions.length)issues.push('exclusions');if(!content.advanceDue)issues.push('advance schedule');if(!content.balanceTerms)issues.push('balance terms');if(!content.validUntil)issues.push('valid-until date');if(content.validUntil&&content.validUntil<new Date().toISOString().slice(0,10))issues.push('a future validity date');if(!content.cancellationTerms)issues.push('cancellation terms');
- const optionIds=new Set(content.options.map(x=>x.id));if(content.stays.some(x=>x.optionId&&!optionIds.has(x.optionId))||content.transport.some(x=>x.optionId&&!optionIds.has(x.optionId)))issues.push('valid option links');
- if(content.transport.some(x=>x.responsibility==='Customer booked'&&x.chargeIncluded))issues.push('customer-booked transport excluded from agency price');
- if(issues.length)throw new Error(`Cannot approve yet. Add or correct: ${[...new Set(issues)].join(', ')}.`);
+type QuoteOption = z.infer<typeof quoteOption>;
+type OptionPrice = Pick<QuoteOption, 'name' | 'unitPrice' | 'discount' | 'taxAmount' | 'quantity'>;
+
+export function quoteOptionPrice(option: OptionPrice) {
+  const unitPriceMinor = minor(option.unitPrice);
+  const discountMinor = minor(option.discount);
+  const taxAmountMinor = minor(option.taxAmount);
+  const subtotalMinor = Math.round(unitPriceMinor * option.quantity);
+  const totalMinor = subtotalMinor - discountMinor + taxAmountMinor;
+  if (totalMinor < 0) throw new Error(`Option ${option.name}: discount cannot exceed subtotal plus tax.`);
+  return { unitPriceMinor, discountMinor, taxAmountMinor, subtotalMinor, totalMinor };
+}
+
+export function optionAmounts(option: QuoteOption) {
+  const price = quoteOptionPrice(option);
+  const internalCostMinor = minor(option.internalCost);
+  return { ...price, internalCostMinor, estimatedMarginMinor: price.totalMinor - internalCostMinor };
+}
+
+export function quoteApprovalIssues(content: QuoteContent) {
+  const issues: { section: string; message: string }[] = [];
+  const add = (section: string, message: string) => issues.push({ section, message });
+  if (!content.title) add("overview", "Add a quotation title.");
+  if (!content.destinations) add("overview", "Add a destination.");
+  if (!content.adults && !content.childrenAges && !content.infants) add("overview", "Add the traveller count.");
+  if (!content.services.length) add("overview", "Choose at least one service.");
+  if (content.dateScope === "Exact") {
+    if (!content.startDate || !content.endDate || content.endDate < content.startDate)
+      add("overview", "Enter valid trip start and end dates.");
+  } else if (!content.dateLabel) add("overview", "Describe the indicative travel dates.");
+  if (content.services.includes("Accommodation") && !content.stays.length) add("stays", "Add at least one stay.");
+  if (content.services.includes("Accommodation")) {
+    content.stays.forEach((stay, index) => {
+      const label = stay.property ? `Stay ${index + 1} (${stay.property})` : `Stay ${index + 1}`;
+      const missing = [!stay.property && "property name", !stay.rooms && "number of rooms", !stay.checkIn && "check-in date", !stay.checkOut && "check-out date"].filter(Boolean);
+      if (missing.length) add("stays", `${label} needs ${missing.join(", ")}.`);
+      if (stay.checkIn && stay.checkOut && stay.checkOut <= stay.checkIn) add("stays", `${label} must check out after check-in.`);
+    });
+  }
+  if (content.services.some((service) => ['Car / transfer', 'Flight coordination', 'Train coordination', 'Bus coordination', 'Ferry / boat'].includes(service)) && !content.transport.length)
+    add("transport", "Add the transport route and who is arranging it.");
+  if (!content.options.length) add("pricing", "Add at least one priced option.");
+  for (const option of content.options) {
+    try {
+      if (quoteOptionPrice(option).unitPriceMinor <= 0) add("pricing", `Enter a price for ${option.name}.`);
+    } catch (error) {
+      const message = (error as Error).message;
+      add("pricing", message.startsWith("Option ") ? message : `${option.name}: ${message}`);
+    }
+  }
+  if (!content.inclusions.length) add("terms", "List what is included.");
+  if (!content.exclusions.length) add("terms", "List what is excluded.");
+  if (!content.validUntil) add("terms", "Set a valid-until date for the quotation.");
+  else if (content.validUntil < indiaInput(new Date().toISOString()).slice(0, 10)) add("terms", "The valid-until date has passed. Choose today or a later date.");
+  if (!content.cancellationTerms) add("terms", "Add the cancellation terms.");
+  const optionIds = new Set(content.options.map((option) => option.id));
+  if (content.stays.some((stay) => stay.optionId && !optionIds.has(stay.optionId))) add("stays", "Link each stay to an existing option or to all options.");
+  if (content.transport.some((leg) => leg.optionId && !optionIds.has(leg.optionId))) add("transport", "Link each transport leg to an existing option or to all options.");
+  if (content.transport.some((leg) => leg.responsibility === "Customer booked" && leg.chargeIncluded))
+    add("transport", "Keep customer-booked transport out of the package price.");
+  return issues;
+}
+
+export function assertApproverReady(content: QuoteContent) {
+  const issues = quoteApprovalIssues(content);
+  if (issues.length) throw new Error(`Cannot approve yet. ${issues.map(({ message }) => message).join(" ")}`);
 }
 
 export type QuoteContent=z.infer<typeof quoteContentSchema>;

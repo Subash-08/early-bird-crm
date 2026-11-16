@@ -100,6 +100,7 @@ export async function submitSettlement(a: Actor, input: unknown) {
   const attachment = evidence(p);
   return transact(async s => {
     const b = await access(a, p.bookingId, s, true);
+    if (b.paymentTracking === false) throw new Error("Payments and expenses are not tracked for this booking.");
     const existing = await (await collection("settlementEntries")).findOne({ _id: `${a.org}:${p.commandId}`, org: a.org }, { session: s });
     if (existing) { if (existing.bookingId !== b._id || existing.submittedById !== a.id) throw new Error("409: Request key already used."); return existing._id; }
     const amountMinor = cents(p.amount);
@@ -201,9 +202,11 @@ export async function confirmBookingChange(a: Actor, input: unknown) {
       const activeTravellers = updatedTravellers.filter((t: Row) => !t.cancelled);
       if (activeTravellers.length && !activeTravellers.some((t: Row) => t.lead)) activeTravellers[0].lead = true;
       await (await collection("bookings")).updateOne({ _id: b._id, org: a.org }, { $set: { totalMinor: change.newTotalMinor, originalTotalMinor: b.originalTotalMinor ?? b.totalMinor,
-        outstandingMinor: totals.outstandingMinor, unappliedCreditMinor: totals.customerCreditMinor, requiredAdvanceMinor: Math.min(b.requiredAdvanceMinor, change.newTotalMinor),
+        ...(b.paymentTracking !== false ? {
+          outstandingMinor: totals.outstandingMinor, unappliedCreditMinor: totals.customerCreditMinor, requiredAdvanceMinor: Math.min(b.requiredAdvanceMinor, change.newTotalMinor),
+        } : {}),
         travellers: updatedTravellers, ...(change.newStart ? { serviceStart: change.newStart, serviceEnd: change.newEnd } : {}),
-        ...(full ? { status: "Cancelled", cancelledAt: now() } : {}), latestChangeId: change._id, settlementOutstanding: true,
+        ...(full ? { status: "Cancelled", cancelledAt: now() } : {}), latestChangeId: change._id, settlementOutstanding: b.paymentTracking !== false,
       } }, { session: s });
       if (full || partial) {
         const af = { org: a.org, bookingId: b._id, ...(full ? {} : { _id: { $in: change.arrangementIds } }) };
@@ -240,6 +243,9 @@ export async function settlementView(a: Actor, bookingId: string) {
   const b = await access(a, bookingId);
   const entries = await (await collection("settlementEntries")).find({ org: a.org, bookingId }, { projection: { evidenceBytes: 0 } }).sort({ createdAt: -1 }).toArray();
   const changes = await rows("bookingChanges", a, bookingId);
+  if (b.paymentTracking === false) return {
+    booking: publicBookingForRole(b, a.role), changes, entries: [], totals: settlementTotals({ totalMinor: 0 }, [], []), blockers: [],
+  };
   const totals = settlementTotals(b, entries, await rows("payments", a, bookingId));
   const blockers: string[] = [];
   if (!["Trip completed", "Cancelled"].includes(b.status)) blockers.push("Complete or cancel the trip.");
@@ -264,6 +270,7 @@ export async function closeSettlement(a: Actor, input: unknown) {
   // All balance checks must share the transaction snapshot; use a dedicated session-aware closure check.
   return transact(async s => {
     const b = await access(a, p.bookingId, s);
+    if (b.paymentTracking === false) throw new Error("This booking has no financial settlement to close.");
     if (b.version !== p.version) throw new Error("409: Booking changed. Refresh before closing.");
     if (b.financialClosed && !p.reopen) return b._id;
     await (await collection("bookings")).updateOne({ _id: b._id, version: b.version, org: a.org }, { $inc: { version: 1 } }, { session: s });

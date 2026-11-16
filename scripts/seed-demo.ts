@@ -1,4 +1,5 @@
 import { client, collection, indexes, org } from "../src/server/db";
+import { demoPackages } from "./demo-packages";
 
 const iso = (offsetDays = 0, hour = 10) => {
   const value = new Date();
@@ -50,6 +51,16 @@ async function main() {
   const notifications = await collection("notifications");
   const createdAt = iso(-1);
 
+  await (await collection("quoteTemplates")).bulkWrite(demoPackages.map(({ key, ...template }) => ({
+    updateOne: {
+      filter: { _id: `demo:package:${key}`, org: agency },
+      update: { $setOnInsert: {
+        ...template, org: agency, version: 1, active: true, demoSeed: true, createdAt, updatedAt: createdAt,
+      } },
+      upsert: true,
+    },
+  })));
+
   await customers.bulkWrite(
     fixtures.map(([key, name, phone, email]) => ({
       updateOne: {
@@ -89,6 +100,8 @@ async function main() {
             source: index % 2 ? "Phone" : "WhatsApp",
             assigneeId: assignee._id,
             stage,
+            createdById: assignee._id,
+            collaboratorIds: [],
             firstContactAt: iso(-2),
             dateMode: "Flexible",
             departure: iso(45).slice(0, 10),
@@ -107,7 +120,7 @@ async function main() {
             dropoff: "To be confirmed",
             specialRequirements: "",
             notes: "Fictional enquiry for testing. Do not contact.",
-            reason: stage === "Lost" ? "Demo: customer postponed travel" : "",
+            reason: stage === "Lost" ? "Demo: customer postponed travel" : stage === "On hold" ? "Demo: waiting for preferred dates" : "",
             nextAction: stage === "Lost" ? "" : "Call and confirm travel preferences",
             nextFollowUp: stage === "Lost" ? "" : iso(dueDays, 11),
             contactOutcome: stage === "New" ? "Not contacted" : "Connected",
@@ -168,6 +181,7 @@ async function main() {
 
   console.log(`Demo data ready for ${assignee.name}: ${fixtures.length} customers, ${fixtures.length} enquiries and ${fixtures.length - 1} tasks.`);
   console.log("The script is idempotent and never overwrites an existing demo record.");
+  console.log(`Package templates ready: ${demoPackages.length}.`);
 }
 
 main()

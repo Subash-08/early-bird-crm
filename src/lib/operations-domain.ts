@@ -170,6 +170,7 @@ export const tripSegmentSchema = z
     timeZone: z.string().trim().min(3).max(80).default("Asia/Kolkata"),
     driverId: text(80),
     vehicleId: text(80),
+    carHandling: z.enum(["internal", "external"]).default("internal"),
     arrangementId: text(80),
     pickupContact: text(180),
     assistanceNotes: text(2000),
@@ -183,12 +184,20 @@ export const tripSegmentSchema = z
         path: ["endAt"],
         message: "Trip end must be after its start.",
       });
-    if (value.mode === "Car" && (!value.driverId || !value.vehicleId))
+    if (value.mode === "Car" && value.carHandling === "internal" && (!value.driverId || !value.vehicleId))
       ctx.addIssue({
         code: "custom",
         path: ["driverId"],
         message: "Choose a driver and vehicle for a car segment.",
       });
+    if (value.mode === "Car" && value.carHandling === "external") {
+      if (!value.arrangementId) ctx.addIssue({
+        code: "custom", path: ["arrangementId"], message: "Link a car service for this trip.",
+      });
+      if (value.driverId || value.vehicleId) ctx.addIssue({
+        code: "custom", path: ["driverId"], message: "A supplier or customer car cannot have an internal driver or vehicle.",
+      });
+    }
   });
 
 export const tripProgressSchema = z
