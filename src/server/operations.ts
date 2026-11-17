@@ -1348,7 +1348,8 @@ export async function generateOperationsDocument(a: Actor, input: unknown) {
       destination: booking.destination,
       serviceStart: booking.serviceStart,
       serviceEnd: booking.serviceEnd,
-      travellers: (booking.travellers || []).filter((t: Row) => !t.cancelled),
+      travellers: (booking.travellers || []).filter((t: Row) => !t.cancelled)
+        .map((t: Row) => ({ name: t.name, type: t.type, lead: t.lead })),
       arrangements: selectedArrangements.map((item) => ({
         title: item.title,
         type: item.type,
@@ -1404,7 +1405,6 @@ export async function saveTravelDocument(a: Actor, input: unknown) {
     .object({
       bookingId: z.string().min(1),
       category: z.enum([
-        "Passport / ID",
         "Ticket",
         "Visa",
         "Permit",

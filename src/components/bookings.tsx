@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -46,13 +46,18 @@ export function Bookings({
   q,
   reload,
   fail,
+  recordId = "",
+  back,
 }: {
   s: any;
   q: string;
   reload: () => Promise<void>;
   fail: (message: string) => void;
+  recordId?: string;
+  back?: () => void;
 }) {
-  const [selected, setSelected] = useState<Row | null>(null);
+  const [selectedId, setSelectedId] = useState(recordId);
+  const selected = s.bookings.find((booking: Row) => booking._id === selectedId);
   const [busy, setBusy] = useState(false);
   const converted = new Set(s.bookings.map((booking: Row) => booking.quoteId));
   const accepted =
@@ -72,7 +77,7 @@ export function Bookings({
     setBusy(true);
     try {
       await api(action, data);
-      if (close) setSelected(null);
+      if (close && !recordId) setSelectedId("");
       await reload();
       return true;
     } catch (error) {
@@ -154,7 +159,7 @@ export function Bookings({
           <button
             className="booking-card"
             key={booking._id}
-            onClick={() => setSelected(booking)}
+            onClick={() => setSelectedId(booking._id)}
           >
             <span className="booking-icon">
               <ClipboardCheck />
@@ -184,7 +189,7 @@ export function Bookings({
           s={s}
           booking={selected}
           busy={busy}
-          close={() => setSelected(null)}
+          close={recordId && back ? back : () => setSelectedId("")}
           run={run}
         />
       )}
@@ -409,6 +414,10 @@ function Summary({ s, booking, invoice, busy, run }: any) {
 }
 
 function People({ s, booking, busy, run }: any) {
+  const isOperations = s.actor.role === "operations";
+  const [identity, setIdentity] = useState<{ payerPan: string; passports: Record<string, string> } | null>(null);
+  const [identityError, setIdentityError] = useState("");
+  const [identityAttempt, setIdentityAttempt] = useState(0);
   const [data, setData] = useState({
     payerName: booking.payer?.name || "",
     payerPhone: booking.payer?.phone || "",
@@ -418,13 +427,28 @@ function People({ s, booking, busy, run }: any) {
     taxId: booking.payer?.taxId || "",
     placeOfSupply: booking.payer?.placeOfSupply || "",
     buyerStateCode: booking.payer?.stateCode || "",
-    travellers: booking.travellers || [],
+    travellers: (booking.travellers || []).filter((traveller: Row) => !traveller.cancelled).map((traveller: Row) => ({
+      id: traveller.id, name: traveller.name, type: traveller.type, lead: traveller.lead,
+      dateOfBirth: traveller.dateOfBirth, nationality: traveller.nationality, phone: traveller.phone, notes: traveller.notes,
+    })),
     advanceDueAt: local(booking.advanceDueAt),
     balanceDueAt: local(booking.balanceDueAt),
     paymentNote: booking.paymentNote || "",
     coordinatorNotes: booking.coordinatorNotes || "",
   });
-  if (s.actor.role === "operations") {
+  useEffect(() => {
+    if (isOperations) return;
+    let active = true;
+    fetch(`/api/crm?resource=booking-private-numbers&id=${encodeURIComponent(booking._id)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || "Could not load document numbers.");
+        if (active) setIdentity(body);
+      })
+      .catch((error: Error) => { if (active) setIdentityError(error.message); });
+    return () => { active = false; };
+  }, [booking._id, identityAttempt, isOperations]);
+  if (isOperations) {
     const lead = booking.travellers?.find((person: Row) => person.lead);
     return (
       <div className="ops-contact">
@@ -459,6 +483,12 @@ function People({ s, booking, busy, run }: any) {
           version: booking.version,
           details: {
             ...data,
+            ...(identity ? {
+              payerPan: identity.payerPan,
+              travellers: data.travellers.map((traveller: Row) => ({
+                ...traveller, passportNumber: identity.passports[traveller.id] || "",
+              })),
+            } : {}),
             advanceDueAt: iso(data.advanceDueAt),
             balanceDueAt: iso(data.balanceDueAt),
           },
@@ -466,6 +496,10 @@ function People({ s, booking, busy, run }: any) {
       }}
     >
       <h3 className="span">Payer and billing contact</h3>
+      {!identity && <p className="span helper" role={identityError ? "alert" : "status"}>
+        {identityError || "Loading optional document numbers…"} {identityError &&
+          <button type="button" className="text-button" onClick={() => { setIdentityError(""); setIdentityAttempt((n) => n + 1); }}>Try again</button>}
+      </p>}
       <Field
         label="Payer name"
         value={data.payerName}
@@ -484,10 +518,12 @@ function People({ s, booking, busy, run }: any) {
         set={(value: string) => setData({ ...data, payerEmail: value })}
       />
       <Field
-        label="Tax/GST ID (optional)"
+        label="GSTIN (optional)"
         value={data.taxId}
         set={(value: string) => setData({ ...data, taxId: value })}
       />
+      <Field label="Payer PAN (optional)" value={identity?.payerPan || ""} maxLength={10} autoComplete="off" disabled={!identity}
+        set={(value: string) => setIdentity((current) => current && { ...current, payerPan: value })} />
       <Field
         label="Billing address"
         value={data.billingAddress}
@@ -570,6 +606,13 @@ function People({ s, booking, busy, run }: any) {
                 <X />
               </button>
             )}
+            <label className="field traveller-passport"><span>Passport number (optional)</span>
+              <input value={identity?.passports[traveller.id] || ""} maxLength={24} autoComplete="off" disabled={!identity}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setIdentity((current) => current && ({ ...current, passports: { ...current.passports, [traveller.id]: value } }));
+                }} />
+            </label>
           </div>
         ))}
         <button

@@ -347,7 +347,34 @@ svg {
 .detail-hero h1 { margin: 4px 0; }
 .detail-avatar { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 20px; background: var(--sky); color: var(--navy); font-size: 20px; font-weight: 850; }
 .detail-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; }
-.detail-section { padding: 22px; }
+.detail-section { padding: 22px; min-width: 0; overflow-wrap: anywhere; }
+.detail-trip-fields { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 155px), 1fr)); gap: 8px 14px; margin: 8px 0 0; }
+.detail-trip-fields dt { font-size: .78rem; font-weight: 700; color: var(--muted); }
+.detail-trip-fields dd { margin: 2px 0 0; font-size: .89rem; white-space: pre-line; }
+.detail-section article a { color: var(--blue); font-weight: 700; text-underline-offset: .2em; }
+.metrics.overview-metrics { grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); }
+.overview-metrics .metric { cursor: pointer; text-align: left; color: inherit; transition: border-color .15s, box-shadow .15s; }
+.overview-metrics .metric:hover { border-color: var(--blue); box-shadow: 0 3px 12px #154c6714; }
+.overview-metrics .overview-metric-note { color: var(--muted); margin-top: 5px; font-size: .8rem; }
+.overview-grid { align-items: start; }
+.overview-panel { min-width: 0; scroll-margin-top: 130px; }
+.overview-panel h3 { display: flex; align-items: center; gap: 8px; }
+.overview-panel h3 svg, .overview-row > svg { width: 17px; height: 17px; flex: none; color: var(--blue); }
+.overview-panel ul { list-style: none; margin: 0; padding: 0; }
+.overview-panel li { border-top: 1px solid var(--line); }
+.overview-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; background: none; border: none; color: inherit; padding: 12px 6px; border-radius: 8px; cursor: pointer; overflow-wrap: anywhere; }
+.overview-row:hover { background: var(--sky); }
+.overview-row small { display: block; color: var(--muted); margin-top: 3px; }
+.overview-empty { color: var(--muted); margin: 0; padding: 10px 2px; }
+.overview-shortcuts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; }
+.workspace-record-back { margin-bottom: 14px; }
+.workspace-record-empty { padding: 20px; }
+.customer-numbers { min-width: 0; border: 1px solid var(--line); border-radius: 12px; margin: 10px 0 0; padding: 12px; }
+.customer-numbers legend { padding-inline: 5px; color: var(--navy); font-weight: 750; }
+.customer-numbers legend svg { width: 17px; height: 17px; vertical-align: text-bottom; margin-right: 6px; }
+.customer-numbers p { margin: 7px 0; font-size: .88rem; }
+.customer-number-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 175px), 1fr)); gap: 10px; }
+.customer-number-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .detail-section h2 { display: flex; align-items: center; gap: 9px; margin: 0 0 16px; font-size: 17px; }
 .detail-section h2 svg,.detail-section > p svg { width: 17px; vertical-align: middle; margin-right: 7px; color: var(--blue); }
 .detail-section article,.detail-section > a { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 3px 12px; padding: 12px 0; border-top: 1px solid var(--line); color: inherit; text-decoration: none; }
@@ -3768,6 +3795,9 @@ button.quote-row:hover {
 .register-toolbar > div { align-items: end; flex-wrap: wrap; }
 .register-toolbar .field { min-width: 165px; }
 .register-list { padding-block: 10px; }
+.traveller-row .traveller-passport { grid-column: 1 / -1; }
+.invoice-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 8px 12px; }
+.invoice-preview-frame { display: block; width: 100%; height: clamp(460px, 75vh, 790px); border: 1px solid var(--line); border-radius: 12px; background: white; }
 .register-row { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .register-row summary { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, .85fr) minmax(0, 1fr); gap: 10px; cursor: pointer; }
 .register-row summary span { color: var(--muted); }

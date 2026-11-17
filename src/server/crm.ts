@@ -17,7 +17,11 @@ import { publicQuoteForRole } from "@/lib/quote-domain";
 import { publicBookingForRole } from "@/lib/booking-domain";
 import { publicArrangementForRole } from "@/lib/operations-domain";
 import { defaultInvoiceTemplate } from "@/lib/invoice-domain";
-import { bookingCreationActions, bookingNextAction } from "@/lib/booking-next-action";
+import { bookingCreationActions, bookingNextAction, displayedNextAction } from "@/lib/booking-next-action";
+import { panNumber, passportNumber } from "@/lib/identity-numbers";
+import { workspaceOverview } from "./overview";
+import { acceptedQuotesWithoutBooking } from "./accepted-quote-queue";
+import { isRecordWorkspace } from "@/lib/workspace-access";
 export function owner(a: Actor) {
   if (a.role !== "owner") throw new Error("403: Owner access required.");
 }
@@ -105,18 +109,17 @@ export async function customerAllowed(
     await collection("customers")
   ).findOne({ _id: cid, org: a.org }, { session: s });
   if (!c) throw new Error("404: Customer not found.");
-  if (
-    a.role !== "owner" &&
-    c.assigneeId !== a.id &&
-    !(await (
-      await collection("enquiries")
-    ).findOne(
-      { org: a.org, customerId: cid, ...(sharedRead ? enquiryMembership(a.id) : { assigneeId: a.id }) },
-      { session: s },
-    ))
-  )
+  if (!(await hasCustomerAccess(a, c, s, sharedRead)))
     throw new Error("403: Customer is not assigned to you.");
   return c;
+}
+
+async function hasCustomerAccess(a: Actor, customer: Row, session?: ClientSession, sharedRead = false) {
+  if (a.role === "owner" || customer.assigneeId === a.id) return true;
+  return Boolean(await (await collection("enquiries")).findOne(
+    { org: a.org, customerId: customer._id, ...(sharedRead ? enquiryMembership(a.id) : { assigneeId: a.id }) },
+    { session, projection: { _id: 1 } },
+  ));
 }
 
 export async function searchCustomers(a: Actor, input: unknown) {
@@ -169,14 +172,12 @@ export async function searchCustomers(a: Actor, input: unknown) {
 
 export async function customerDetail(a: Actor, customerId: string) {
   const { pan, passportNumber, ...customer } = await customerAllowed(a, customerId, undefined, true);
+  const canEditNumbers = await hasCustomerAccess(a, customer);
   const assignedFilter = a.role === "owner" ? {} : { assigneeId: a.id };
   const salesBookingFilter = a.role === "owner" ? {} : { salesAssigneeId: a.id };
-  const [enquiries, quotes, bookings, tasks] = await Promise.all([
+  const [enquiries, bookings, tasks] = await Promise.all([
     (await collection("enquiries")).find(
       { org: a.org, customerId, ...(a.role === "owner" ? {} : enquiryMembership(a.id)) },
-    ).sort({ updatedAt: -1 }).limit(50).toArray(),
-    (await collection("quotes")).find(
-      { org: a.org, customerId, ...assignedFilter },
     ).sort({ updatedAt: -1 }).limit(50).toArray(),
     (await collection("bookings")).find(
       { org: a.org, customerId, ...salesBookingFilter },
@@ -186,16 +187,28 @@ export async function customerDetail(a: Actor, customerId: string) {
     ).sort({ dueAt: -1 }).limit(50).toArray(),
   ]);
   const bookingIds = bookings.map((booking) => booking._id);
-  const invoices = bookingIds.length
-    ? await (await collection("invoices")).find(
-        { org: a.org, bookingId: { $in: bookingIds } },
-        { projection: { bytes: 0 } },
-      ).sort({ createdAt: -1 }).limit(100).toArray()
-    : [];
+  const quoteScope = a.role === "owner" ? {} : {
+    $or: [{ assigneeId: a.id }, { enquiryId: { $in: enquiries.map((enquiry) => enquiry._id) } }],
+  };
+  const [quotes, invoices] = await Promise.all([
+    (await collection("quotes")).find({ org: a.org, customerId, ...quoteScope })
+      .sort({ updatedAt: -1 }).limit(50).toArray(),
+    bookingIds.length
+      ? (await collection("invoices")).find(
+          { org: a.org, bookingId: { $in: bookingIds } },
+          { projection: { invoiceNumber: 1, status: 1, documentId: 1 } },
+        ).sort({ createdAt: -1 }).limit(100).toArray()
+      : [],
+  ]);
+  const bookingsByEnquiry = new Map(bookings.filter((booking) => booking.enquiryId).map((booking) => [booking.enquiryId, booking]));
   return {
     actor: a,
     customer: { ...customer, panOnFile: Boolean(pan), passportOnFile: Boolean(passportNumber) },
-    enquiries,
+    canEditNumbers,
+    enquiries: enquiries.map((enquiry) => ({
+      ...enquiry,
+      nextAction: displayedNextAction(enquiry.nextAction, bookingsByEnquiry.get(enquiry._id)?.status),
+    })),
     quotes: quotes.map((quote) => publicQuoteForRole(quote, a.role)),
     bookings: bookings.map((booking) => publicBookingForRole(booking, a.role)),
     tasks,
@@ -208,12 +221,43 @@ export async function customerEdit(a: Actor, customerId: string) {
   const { name, phone, email, address, language, notes, reviewNeeded, pan, passportNumber, version } = customer;
   return { name, phone, email, address, language, notes, reviewNeeded, pan, passportNumber, version };
 }
+export async function customerNumbers(a: Actor, customerId: string) {
+  const customer = await customerAllowed(a, customerId);
+  return { pan: customer.pan || "", passportNumber: customer.passportNumber || "", version: customer.version };
+}
+
+const customerNumbersUpdate = z.strictObject({
+  customerId: z.string().min(1).max(160),
+  version: z.number().int().positive(),
+  pan: panNumber.nonoptional(),
+  passportNumber: passportNumber.nonoptional(),
+});
+
+export async function saveCustomerNumbers(a: Actor, input: unknown) {
+  const { customerId, version, pan, passportNumber } = customerNumbersUpdate.parse(input);
+  return transact(async (session) => {
+    const customer = await customerAllowed(a, customerId, session);
+    if (customer.version !== version) throw new Error("409: Customer changed. Reopen the document numbers and try again.");
+    if ((customer.pan || "") !== pan || (customer.passportNumber || "") !== passportNumber) {
+      const result = await (await collection("customers")).updateOne(
+        { _id: customerId, org: a.org, version },
+        { $set: { pan, passportNumber, updatedAt: now() }, $inc: { version: 1 } },
+        { session },
+      );
+      if (!result.matchedCount) throw new Error("409: Customer changed. Reopen the document numbers and try again.");
+      await audit(a, customerId, "Customer document numbers updated", session);
+    }
+    return { panOnFile: Boolean(pan), passportOnFile: Boolean(passportNumber) };
+  });
+}
+
 export type WorkspaceScope =
   | "all" | "shell" | "dashboard" | "enquiries" | "customers" | "quotations"
   | "bookings" | "operations" | "settlements" | "tasks" | "notifications"
   | "reports" | "imports" | "invoice-settings" | "staff" | "attendance";
 
 export type WorkspaceListQuery = {
+  recordId?: string;
   page?: number;
   pageSize?: number;
   query?: string;
@@ -231,16 +275,19 @@ export async function snapshot(
   scope: WorkspaceScope = "all",
   input: WorkspaceListQuery = {},
 ) {
-  const page = Math.max(1, Math.floor(Number(input.page) || 1));
+  const recordId = input.recordId || "";
+  if (recordId && (!isRecordWorkspace(scope) || recordId.length > 160)) throw new Error("404: Record not found.");
+  if (recordId && scope === "bookings" && a.role === "operations") throw new Error("403: Booking details are available to the coordination team.");
+  const page = recordId ? 1 : Math.max(1, Math.floor(Number(input.page) || 1));
   const pageSize = Math.min(50, Math.max(10, Math.floor(Number(input.pageSize) || 20)));
-  const query = String(input.query || "").trim().slice(0, 80);
-  const status = String(input.status || "").trim().slice(0, 80);
-  const assigneeId = String(input.assigneeId || "").trim().slice(0, 100);
+  const query = recordId ? "" : String(input.query || "").trim().slice(0, 80);
+  const status = recordId ? "" : String(input.status || "").trim().slice(0, 80);
+  const assigneeId = recordId ? "" : String(input.assigneeId || "").trim().slice(0, 100);
   const from = /^\d{4}-\d{2}-\d{2}$/.test(String(input.from || "")) ? String(input.from) : "";
   const to = /^\d{4}-\d{2}-\d{2}$/.test(String(input.to || "")) ? String(input.to) : "";
   const matcher = query ? { $regex: escapedRegex(query), $options: "i" } : null;
   const dateRange = (field: string, dateOnly = false) =>
-    from || to
+    !recordId && (from || to)
       ? {
           [field]: {
             ...(from ? { $gte: dateOnly ? from : `${from}T00:00:00.000Z` } : {}),
@@ -263,11 +310,12 @@ export async function snapshot(
   const needInvoices = needs("bookings");
   const needOperations = needs("operations");
   const needSettlementLinks = needs("operations", "settlements");
-  const needEnquiries = needs("dashboard", "enquiries", "quotations");
+  const needEnquiries = needs("enquiries", "quotations");
   const needCustomers = needs("customers", "enquiries", "quotations");
-  const needTasks = needs("dashboard", "tasks");
-  const needQuotes = needs("quotations", "bookings");
-  const needNotificationRows = needs("dashboard", "notifications");
+  const needTasks = needs("tasks");
+  const needQuotes = !recordId && needs("quotations", "bookings");
+  const needNotificationRows = needs("notifications");
+  const overview = scope === "dashboard" ? await workspaceOverview(a) : undefined;
   const bookingAccess =
     a.role === "owner"
       ? { org: a.org }
@@ -277,6 +325,7 @@ export async function snapshot(
   const bookingIsPrimary = ["bookings", "operations", "settlements"].includes(scope);
   const bookingFilter = {
     ...bookingAccess,
+    ...(recordId ? { _id: recordId } : {}),
     ...(scope === "operations" ? { operationsReleased: true } : {}),
     ...(bookingIsPrimary && status ? { status } : {}),
     ...(bookingIsPrimary && assigneeId && a.role === "owner"
@@ -479,7 +528,7 @@ export async function snapshot(
     .find(enquiryFilter)
     .sort({ updatedAt: -1 })
     .skip(enquiryIsPrimary ? (page - 1) * pageSize : 0)
-    .limit(enquiryIsPrimary ? pageSize : scope === "dashboard" ? 100 : 200)
+    .limit(enquiryIsPrimary ? pageSize : 200)
     .toArray() : [];
   const customerIsPrimary = scope === "customers";
   const customerAccess = a.role === "owner"
@@ -522,6 +571,7 @@ export async function snapshot(
   const taskIsPrimary = scope === "tasks";
   const taskFilter = {
     org: a.org,
+    ...(recordId ? { _id: recordId } : {}),
     ...(a.role === "owner" ? {} : { assigneeId: a.id }),
     ...(taskIsPrimary && status ? { status } : {}),
     ...(taskIsPrimary && assigneeId && a.role === "owner" ? { assigneeId } : {}),
@@ -556,6 +606,8 @@ export async function snapshot(
   const quotes =
     !needQuotes || a.role === "operations"
       ? []
+      : scope === "bookings"
+      ? (await acceptedQuotesWithoutBooking(a.org, a.role === "sales" ? { assigneeId: a.id } : {}, 100)).rows
       : (
           await (
             await collection("quotes")
@@ -563,7 +615,7 @@ export async function snapshot(
             .find(quoteFilter)
             .sort({ updatedAt: -1 })
             .skip(quoteIsPrimary ? (page - 1) * pageSize : 0)
-            .limit(quoteIsPrimary ? pageSize : scope === "bookings" ? 100 : 200)
+            .limit(quoteIsPrimary ? pageSize : 200)
             .toArray()
         ).map((q) => publicQuoteForRole(q, a.role));
   if (scope === "quotations" && quotes.length) {
@@ -619,7 +671,9 @@ export async function snapshot(
         },
       )
       .toArray(),
-    notificationUnread: await (await collection("notifications")).countDocuments({
+    overview,
+    recordId,
+    notificationUnread: overview?.unreadCount ?? await (await collection("notifications")).countDocuments({
       org: a.org,
       recipient: a.id,
       read: { $ne: true },
@@ -707,8 +761,9 @@ export async function saveCustomer(
     const { _id: cid } = recordId
       ? await customerAllowed(a, recordId, s)
       : { _id: id() };
-    const { duplicateConfirmed: _, ...fields } = p;
+    const { duplicateConfirmed: _, pan, passportNumber, ...profile } = p;
     void _;
+    const fields = { ...profile, ...(pan !== undefined ? { pan } : {}), ...(passportNumber !== undefined ? { passportNumber } : {}) };
     if (recordId) {
       const r = await c.updateOne(
         { _id: cid, org: a.org, version },

@@ -65,14 +65,18 @@ export function Operations({
   q,
   reload,
   fail,
+  recordId = "",
+  back,
 }: {
   s: any;
   q: string;
   reload: () => Promise<void>;
   fail: (message: string) => void;
+  recordId?: string;
+  back?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(recordId);
   const selected = s.bookings.find(
     (booking: Row) => booking._id === selectedId,
   );
@@ -211,7 +215,7 @@ export function Operations({
           booking={selected}
           busy={busy}
           run={run}
-          close={() => setSelectedId("")}
+          close={recordId && back ? back : () => setSelectedId("")}
         />
       )}
     </>
@@ -1397,7 +1401,7 @@ function DocumentsSection({
 }: any) {
   const [arrangementId, setArrangementId] = useState("");
   const [travel, setTravel] = useState({
-    category: "Passport / ID",
+    category: "Ticket",
     travellerName: booking.travellers?.[0]?.name || "",
     expiresAt: "",
     note: "",
@@ -1517,7 +1521,6 @@ function DocumentsSection({
               }
             >
               {[
-                "Passport / ID",
                 "Ticket",
                 "Visa",
                 "Permit",

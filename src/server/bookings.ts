@@ -15,6 +15,7 @@ import { calculateInvoice, defaultInvoiceTemplate } from "@/lib/invoice-domain";
 import { collection, type Row } from "./db";
 import { audit, notify, owner, transact } from "./crm";
 import { buildFinancialPdf, invoicePrintSnapshot } from "./financial-pdf";
+import { bookingCreationActions } from "@/lib/booking-next-action";
 import { getActiveInvoiceTemplate, nextInvoiceNumber } from "./invoices";
 
 const now = () => new Date().toISOString();
@@ -47,6 +48,23 @@ async function bookingAccess(a: Actor, bookingId: string, s?: ClientSession) {
   if (s && booking.financialClosed) throw new Error("Financial settlement is closed. Ask the Owner to reopen it first.");
   if (s) await (await collection("bookings")).updateOne({ _id: booking._id, org: a.org }, { $inc: { financialRevision: 1 } }, { session: s });
   return booking;
+}
+
+export async function bookingPrivateNumbers(a: Actor, bookingId: string) {
+  if (a.role === "operations") throw new Error("403: Traveller document numbers are not available to Operations.");
+  const booking = await bookingAccess(a, bookingId);
+  return {
+    payerPan: booking.payer?.pan || "",
+    passports: Object.fromEntries((booking.travellers || [])
+      .filter((traveller: Row) => !traveller.cancelled && traveller.passportNumber)
+      .map((traveller: Row) => [traveller.id, traveller.passportNumber])),
+  };
+}
+
+function payerForDocument(payer: Row) {
+  const { pan, ...billing } = payer || {};
+  void pan;
+  return billing;
 }
 
 async function upsertTask(
@@ -273,6 +291,11 @@ export async function convertAcceptedQuote(a: Actor, input: unknown) {
       `Booking ${bookingNumber} created from accepted ${quote.quoteNumber} v${quote.quoteVersion}`,
       s,
     );
+    await (await collection("enquiries")).updateOne(
+      { org: a.org, _id: quote.enquiryId, nextAction: { $in: bookingCreationActions } },
+      { $set: { nextAction: "", updatedAt: now() }, $inc: { version: 1 } },
+      { session: s },
+    );
     return bookingId;
   });
 }
@@ -290,6 +313,13 @@ export async function saveBookingDetails(a: Actor, input: unknown) {
   const details = bookingDetailsSchema.parse(raw.details);
   return transact(async (s) => {
     const booking = await bookingAccess(a, raw.bookingId, s);
+    const previous = new Map<string, Row>((booking.travellers || []).map((traveller: Row) => [traveller.id, traveller]));
+    if (details.travellers.some((traveller) => previous.get(traveller.id)?.cancelled))
+      throw new Error("A cancelled traveller cannot be added back from this form.");
+    const travellers = details.travellers.map((traveller) => ({
+      ...traveller,
+      passportNumber: traveller.passportNumber ?? previous.get(traveller.id)?.passportNumber ?? "",
+    }));
     const result = await (
       await collection("bookings")
     ).updateOne(
@@ -303,10 +333,11 @@ export async function saveBookingDetails(a: Actor, input: unknown) {
             billingAddress: details.billingAddress,
             deliveryAddress: details.deliveryAddress,
             taxId: details.taxId,
+            pan: details.payerPan ?? booking.payer?.pan ?? "",
             placeOfSupply: details.placeOfSupply,
             stateCode: details.buyerStateCode,
           },
-          travellers: details.travellers,
+          travellers: [...travellers, ...[...previous.values()].filter((traveller) => traveller.cancelled)],
           ...(booking.paymentTracking !== false ? {
             advanceDueAt: details.advanceDueAt,
             balanceDueAt: details.balanceDueAt,
@@ -392,7 +423,7 @@ export async function issueInvoice(a: Actor, input: unknown) {
       number: invoiceNumber,
       status: "Issued",
       bookingNumber: booking.bookingNumber,
-      payer: booking.payer,
+      payer: payerForDocument(booking.payer),
       lines: totals.lines,
       totals,
       totalMinor: totals.grandTotalMinor,
@@ -721,7 +752,7 @@ export async function decidePayment(a: Actor, input: unknown) {
         kind: "Receipt",
         number: receiptNumber,
         bookingNumber: booking.bookingNumber,
-        payer: booking.payer,
+        payer: payerForDocument(booking.payer),
         amountMinor: payment.amountMinor,
         currency: payment.currency,
         receivedAt: payment.receivedAt,

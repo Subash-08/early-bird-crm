@@ -288,6 +288,8 @@ describe("quotation workflow integration", () => {
     expect(await bookings.convertAcceptedQuote(sales, { quoteId })).toBe(bookingId);
     const booking = await (await dbmod.collection("bookings")).findOne({ _id: bookingId });
     expect(booking).toMatchObject({ requiredAdvanceMinor: 0, paymentTracking: false, status: "Ready for coordination" });
+    const enquiryAfterBooking = await crm.enquiryActivity(sales, "enquiry-1");
+    expect(enquiryAfterBooking).toMatchObject({ enquiry: { nextAction: "" }, bookingNextAction: "Start the service checklist" });
     await expect(bookings.amendAdvance(owner, { bookingId, version: booking.version, amount: "5000", reason: "test" })).rejects.toThrow("not tracked");
     await bookings.releaseOperations(owner, { bookingId, version: booking.version, coordinationMode: "direct", operationsAssigneeIds: [] });
     const operations = await import("../src/server/operations");

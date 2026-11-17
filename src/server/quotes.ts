@@ -126,12 +126,13 @@ export async function enquiryQuoteWorkspace(a: Actor, quoteId: string) {
     ["Requested", "Needs information", "Draft"].includes(q.status)
       ? (await collection("quoteTemplates")).find({ org: a.org, active: true }, { projection: { name: 1, active: 1 } }).sort({ name: 1 }).limit(100).toArray()
       : [],
-    q.status === "Accepted" ? (await collection("bookings")).findOne({ quoteId: q._id, org: a.org }, { projection: { bookingNumber: 1, status: 1 } }) : null,
+    q.status === "Accepted" ? (await collection("bookings")).findOne({ quoteId: q._id, org: a.org }, { projection: { bookingNumber: 1, status: 1, salesAssigneeId: 1 } }) : null,
   ]);
-  const invoice = booking && (a.role === "owner" || q.assigneeId === a.id)
+  const canOpenBooking = Boolean(booking && (a.role === "owner" || booking.salesAssigneeId === a.id));
+  const invoice = booking && canOpenBooking
     ? await (await collection("invoices")).findOne({ org: a.org, bookingId: booking._id, status: "Issued" }, { projection: { documentId: 1, invoiceNumber: 1 } })
     : null;
-  return { quote: publicQuoteForRole(q, a.role), enquiry, customer, quoteTemplates, booking: booking && { ...booking, invoice } };
+  return { quote: publicQuoteForRole(q, a.role), enquiry, customer, quoteTemplates, booking: booking && { _id: booking._id, bookingNumber: booking.bookingNumber, status: booking.status, canOpen: canOpenBooking, invoice } };
 }
 
 function reusablePackage(content: QuoteContent): QuoteContent {

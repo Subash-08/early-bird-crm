@@ -11,7 +11,7 @@
 
 - **Reports → Customer & trip register** lists one row per visible enquiry and also customers without a visible enquiry. Open a row for contacts, trip details, budget, travellers, next action and linked references. The status filter uses the booking status when there is a booking, otherwise the latest quote status. The enquiry-stage filter is separate.
 - Today, 7 days, 30 days and Custom filter record creation dates in India time. Exports use the applied filter across every page, or all records the current user can access. CSV and Excel are generated from the database when downloaded. Owner sees the agency's records, Sales sees authorized work, and Operations has Summary reports only.
-- **Overview** keeps today’s and overdue tasks. Upcoming items stay in Tasks.
+- **Overview** shows overdue, due-today and upcoming tasks, recently updated open enquiries and quotations, active bookings, and personal unread alerts. Accepted quotations are flagged until converted. Operations sees their own tasks and assigned trips. Click a row to open its exact record. Use **View all** to work through the full list.
 
 ## What to test
 
@@ -22,3 +22,19 @@
 5. Repeat with Sales and Operations accounts. Try direct register and download URLs as Operations. Confirm Sales cannot retrieve a customer or enquiry outside their scope. On Overview, check that future tasks no longer appear in the due-today list and that overdue tasks still appear.
 
 The new booking lookup index is included in the existing database setup command.
+
+## Optional document numbers and invoice settings
+
+1. Open an enquiry, choose **Trip → Edit document numbers**, and enter test PAN and passport numbers. Click **Save document numbers**. Open the customer’s detail page and check that both numbers are marked on file. Open its editor to verify the values, then save both blank to clear them. Try invalid values and confirm that Sales users with shared read access and Operations cannot retrieve or edit the actual numbers. On the customer page, verify the saved trip details, next action and follow-up, and follow the links to the enquiry and quotation.
+2. In **Bookings → People**, add a payer PAN and different passport numbers for two travellers. Save, reopen, and edit the second traveller. Verify the first value stays with its traveller. Check that **My trips**, the passenger manifest, PDFs, and the Customer register CSV/XLSX do not include those numbers. The agency PAN in Invoice settings remains separate.
+3. Open an accepted enquiry whose booking already exists, such as the Munnar and Alleppey case. In both Reports and the enquiry, the automatic action should suggest the service checklist when the booking is ready. Confirm a manual next action is preserved. A completed or cancelled booking should stop suggesting coordination.
+4. As Owner, open **Invoice settings**. Change a display toggle or the company name and select **Refresh PDF preview**. Compare the sample with an issued test invoice, including the logo, line item layout, optional summary page, and signatures. Confirm the sample uses fictional buyer data and that refreshing it creates no invoice or number. Sales and Operations should be denied.
+5. Start the service checklist on a test booking. In Operations, copy package services, select and confirm a supplier, record progress, and resolve a test incident before completion. Repeat one scenario with an internal driver and one coordinated by the agency. Check each user sees only their assigned work.
+
+## Overview checks
+
+1. With an Owner, a Sales and two Operations accounts, assign different tasks and trips. Check that the Owner sees team work, Sales sees their own or shared CRM work, and each Operations account sees its assigned trips. Test an unassigned direct link, browser Back, and a mobile viewport.
+2. Create tasks before and after midnight India time, including overdue, completed, and future examples. Check the counters and click a row outside the first page of Tasks. Update it from that record screen.
+3. Accept a quotation, open it from Overview and create the booking. Check that the accepted quotation leaves the queue and the booking appears once. Open the booking from both Overview and the customer page. Open an unread alert and confirm it goes to the correct page and marks the alert as read.
+
+**Tasks** is the cross-booking work queue. The calendar is a secondary view based on the tasks loaded by the current filters and page. Use the task list to review overdue or upcoming assignments.

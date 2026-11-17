@@ -38,6 +38,30 @@ export async function invoiceTemplateForSnapshot(a: Actor) {
   return getActiveInvoiceTemplate(a);
 }
 
+export async function renderInvoiceTemplatePreview(a: Actor, input: unknown) {
+  owner(a);
+  const template = invoiceTemplateSchema.parse(input);
+  checkAsset(template.logoDataUrl, "Logo");
+  checkAsset(template.signatureDataUrl, "Signature");
+  const totals = calculateInvoice([
+    { id: "sample-1", kind: "Charge", hsnCode: "998552", description: "Travel package and local transfers", quantity: 1, unitPrice: 45250.75, gstRate: 5 },
+    { id: "sample-2", kind: "Note", hsnCode: "", description: "See the travel package for the itinerary.", quantity: 0, unitPrice: 0, gstRate: 0 },
+  ], "CGST + SGST", template.showTcs ? 2 : 0, template.roundTaxToRupee);
+  const issued = new Date();
+  return buildFinancialPdf(invoicePrintSnapshot({
+    kind: "Invoice", number: `${template.prefix}-${financialYear(issued)}-${"1".padStart(template.sequenceDigits, "0")}`,
+    bookingNumber: "SAMPLE", issuedAt: issued.toISOString(), currency: "INR",
+    payer: { name: "Sample customer", billingAddress: "Sample billing address", deliveryAddress: "Sample service address", taxId: "Sample GSTIN" },
+    placeOfSupply: template.stateName, buyerStateCode: template.stateCode,
+    lines: totals.lines, totals, copyLabels: template.copyLabels,
+    template: { ...template, showPaymentSummary: false },
+    travelSummary: template.includeTravelSummary ? {
+      destination: "Sample destination", selectedOptionName: "Sample travel package",
+      travellers: [{ name: "Sample traveller" }], services: ["Accommodation and local transport"],
+    } : null,
+  }, null));
+}
+
 export async function saveInvoiceTemplate(a: Actor, input: unknown) {
   owner(a);
   const parsed = invoiceTemplateSchema.parse(input);

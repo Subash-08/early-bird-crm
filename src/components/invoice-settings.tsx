@@ -1,8 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Building2, Eye, FileSignature, Landmark, Save, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Building2, Eye, FileSignature, Landmark, RefreshCw, Save, ShieldCheck } from "lucide-react";
 import { defaultInvoiceTemplate } from "@/lib/invoice-domain";
+
+const templateKeys = Object.keys(defaultInvoiceTemplate) as (keyof typeof defaultInvoiceTemplate)[];
+const templateFields = (data: typeof defaultInvoiceTemplate) => Object.fromEntries(templateKeys.map((key) => [key, data[key]]));
 
 async function api(action: string, data: unknown) {
   const response = await fetch("/api/crm", {
@@ -40,7 +43,25 @@ export function InvoiceSettings({ s, reload, fail }: any) {
   const [data, setData] = useState({ ...defaultInvoiceTemplate, ...(s.invoiceTemplate || {}) });
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
-  const keys = useMemo(() => Object.keys(defaultInvoiceTemplate) as (keyof typeof defaultInvoiceTemplate)[], []);
+  const [previewInput, setPreviewInput] = useState(() => templateFields(data));
+  const [preview, setPreview] = useState<{ url?: string; error?: string }>({});
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    fetch("/api/crm", {
+      method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "invoice-template-preview", data: previewInput }),
+    }).then(async (response) => {
+      if (!response.ok) {
+        const body = await response.json();
+        throw new Error(body.error || "Could not make the invoice preview.");
+      }
+      const pdf = await response.blob();
+      if (active) { objectUrl = URL.createObjectURL(pdf); setPreview({ url: objectUrl }); }
+    }).catch((error: Error) => { if (active) setPreview({ error: error.message }); });
+    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [previewInput]);
+  const refreshPreview = () => { setPreview({}); setPreviewInput(templateFields(data)); };
   const update = (key: string, value: any) => setData((current: any) => ({ ...current, [key]: value }));
   const toggles = [
     ["showDeliveryAddress", "Delivery address"], ["showBuyerGstin", "Buyer GSTIN"],
@@ -61,8 +82,7 @@ export function InvoiceSettings({ s, reload, fail }: any) {
         <form className="panel invoice-settings-form" onSubmit={async (event) => {
           event.preventDefault(); setBusy(true); setSaved(false);
           try {
-            const clean = Object.fromEntries(keys.map((key) => [key, data[key]]));
-            await api("invoice-template-save", clean); setSaved(true); await reload();
+            await api("invoice-template-save", templateFields(data)); setSaved(true); refreshPreview(); await reload();
           } catch (error) { fail((error as Error).message); } finally { setBusy(false); }
         }}>
           <header><Building2 /><div><h3>Company and tax details</h3><p>These appear on the top of every new invoice.</p></div></header>
@@ -103,20 +123,15 @@ export function InvoiceSettings({ s, reload, fail }: any) {
           <div className="invoice-save-bar"><button className="button primary" disabled={busy}><Save /> {busy ? "Saving..." : "Save new template version"}</button>{saved && <span><ShieldCheck /> Saved</span>}</div>
         </form>
         <aside className="invoice-preview-wrap">
-          <div className="invoice-preview-title"><Eye /><div><b>Live layout preview</b><small>Sample data only</small></div></div>
-          <div className="invoice-paper">
-            <h3>{data.documentTitle}</h3><small>Customer copy</small>
-            <div className="invoice-preview-company"><div className="preview-logo">{data.logoDataUrl ? <>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={data.logoDataUrl} alt="Company logo preview" />
-            </> : "LOGO"}</div><div><b>{data.legalName}</b><p>{data.address}</p><p>{data.phone} {data.email}</p></div></div>
-            <div className="preview-gst">GSTIN: {data.gstin || "Not configured"}</div>
-            <div className="preview-two"><div><b>Invoice No</b><p>{data.prefix}-26-27-0008</p></div><div><b>Date</b><p>03 Nov 2026</p></div></div>
-            <div className="preview-two"><div><b>Buyer</b><p>Sample customer<br />Billing address</p></div><div><b>Service address</b><p>Place of supply<br />State code</p></div></div>
-            <div className="preview-table"><b>{data.showHsn ? "HSN" : ""}</b><b>Particulars</b><b>{data.showQuantity ? "Qty" : ""}</b><b>Total</b><span>{data.showHsn ? "998552" : ""}</span><span>Travel package and cab charges{data.showGstRate ? " · GST 5%" : ""}{data.showUnitPrice ? " · Price 1,00,000" : ""}</span><span>{data.showQuantity ? "1" : ""}</span><span>1,00,000.00</span></div>
-            <div className="preview-total"><span>Taxable value</span><b>1,00,000.00</b>{data.showTaxBreakdown && <><span>GST</span><b>5,000.00</b></>}<span>Grand total</span><b>1,05,000.00</b></div>
-            <div className="preview-sign"><span>{data.showReceiverSignature ? "Receiver's signature" : ""}</span><span>{data.showAuthorisedSignature ? "Authorised signatory" : ""}</span></div>
+          <div className="invoice-preview-title"><Eye /><div><b>Invoice PDF preview</b><small>Sample for a new booking</small></div></div>
+          <div className="invoice-preview-actions">
+            <button type="button" className="button secondary" onClick={refreshPreview}><RefreshCw /> Refresh PDF preview</button>
+            {preview.url && <a className="button secondary" href={preview.url} target="_blank" rel="noreferrer">Open sample PDF</a>}
           </div>
+          {preview.error ? <p className="form-error" role="alert">{preview.error}</p> : preview.url
+            ? <iframe className="invoice-preview-frame" title="Sample invoice PDF" src={preview.url} />
+            : <p role="status">Generating PDF preview…</p>}
+          <p className="field-hint">Refresh to see unsaved changes. The payment summary applies to older bookings that track payments.</p>
         </aside>
       </div>
     </div>

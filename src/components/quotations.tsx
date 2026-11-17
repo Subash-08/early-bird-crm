@@ -524,7 +524,7 @@ function QuoteDetail({ s, q, customer, enquiry, booking, busy, run, error }: any
         </div>
         {booking ? <div className="quote-actions">
           {booking.invoice?.documentId && <a className="button secondary" href={`/api/documents/finance/${encodeURIComponent(booking.invoice.documentId)}`} download><Download /> Download invoice</a>}
-          <button className="button secondary" onClick={() => window.history.pushState(null, "", "/bookings")}>View bookings</button>
+          {booking.canOpen && <button className="button secondary" onClick={() => window.history.pushState(null, "", `/bookings/${encodeURIComponent(booking._id)}`)}>Open booking</button>}
           {canShare && <button className="button secondary" onClick={() => window.history.pushState(null, "", "/settlements")}>Booking changes</button>}
         </div> :
           canShare && <button className="button primary" disabled={busy} onClick={() => action("booking-create", { quoteId: q._id })}>Create booking</button>}

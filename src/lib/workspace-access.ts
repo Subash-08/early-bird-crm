@@ -11,6 +11,10 @@ export type View = typeof workspaceViews[number];
 const ownerPages: readonly View[] = ["imports", "invoice-settings", "package-templates", "staff"];
 const operationsPages: readonly View[] = ["dashboard", "operations", "tasks", "notifications", "reports", "attendance"];
 
+export function isRecordWorkspace(value: string): value is "bookings" | "operations" | "tasks" {
+  return value === "bookings" || value === "operations" || value === "tasks";
+}
+
 export function canOpenWorkspace(role: Actor["role"], view: View) {
   if (role === "operations") return operationsPages.includes(view);
   if (role === "sales") return !ownerPages.includes(view);

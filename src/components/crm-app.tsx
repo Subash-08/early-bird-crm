@@ -2,10 +2,14 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
-import { canOpenWorkspace, workspaceViews as routeViews, type View } from "@/lib/workspace-access";
+import { canOpenWorkspace, isRecordWorkspace, workspaceViews as routeViews, type View } from "@/lib/workspace-access";
+import { alertDestination } from "@/lib/alert-destination";
+import { Dashboard } from "./dashboard";
+import type { workspaceOverview } from "@/server/overview";
 import { authClient } from "@/lib/auth-client";
 import { Login } from "./login";
 import { CustomerDetailPage } from "./customer-detail-page";
+import { CustomerDocumentNumbers } from "./customer-document-numbers";
 import { formatFollowUpEvent, indiaInput, indiaIso, shortIndiaTime } from "@/lib/workspace-time";
 import { activeQuoteStatuses, quoteRequestBlock } from "@/lib/quote-request-state";
 import {
@@ -25,7 +29,6 @@ import {
   Phone,
   MapPin,
   Clock3,
-  CalendarDays,
   RefreshCw,
   AlertCircle,
   Check,
@@ -83,6 +86,8 @@ type Snap = {
   settings?: Row;
   invoiceTemplate?: Row;
   notificationUnread?: number;
+  recordId?: string;
+  overview?: Awaited<ReturnType<typeof workspaceOverview>>;
   scope?: string;
   pagination?: { page: number; pageSize: number; total: number; totalPages: number };
   limited?: boolean;
@@ -97,6 +102,8 @@ const emptyCustomer = {
   language: "",
   address: "",
   notes: "",
+  pan: "",
+  passportNumber: "",
   duplicateConfirmed: false,
   reviewNeeded: false,
 };
@@ -134,7 +141,11 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
   if (activitySegment) {
     try { activityMemberId = decodeURIComponent(activitySegment); } catch { /* Invalid IDs show the not-found state. */ }
   }
+  const [pathWorkspace, pathRecord] = pathname.split("/").filter(Boolean);
+  let pathRecordId = pathWorkspace && isRecordWorkspace(pathWorkspace) ? pathRecord || "" : "";
+  try { pathRecordId = decodeURIComponent(pathRecordId); } catch { /* Invalid IDs show the not-found state. */ }
   const requestId = useRef(0);
+  const openingAlert = useRef(false);
   const [snap, setSnap] = useState<Snap | null>(null),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
@@ -148,11 +159,13 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
     [listFilters, setListFilters] = useState<ListFilters>(defaultListFilters),
     [activeCustomerId, setActiveCustomerId] = useState(customerId);
   const scope = activeCustomerId || quoteId || view === "package-templates" ? "shell" : view;
+  const recordId = pathWorkspace === view ? pathRecordId : "";
   const load = useCallback(async () => {
     const currentRequest = ++requestId.current;
     try {
       const params = new URLSearchParams({
         scope,
+        recordId,
         page: String(listFilters.page),
         pageSize: String(listFilters.pageSize),
         q: debouncedSearch,
@@ -185,7 +198,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
     } finally {
       if (currentRequest === requestId.current) setLoading(false);
     }
-  }, [debouncedSearch, listFilters, router, scope, view]);
+  }, [debouncedSearch, listFilters, recordId, router, scope, view]);
   useEffect(() => {
     if (search.trim() === debouncedSearch) return;
     const timer = window.setTimeout(() => {
@@ -318,12 +331,14 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
     if (!canOpenWorkspace(role, next)) return;
     setMoreOpen(false);
     setMobileSearch(false);
-    if (recordId && (next === "quotations" || next === "enquiries")) {
-      window.history.pushState(null, "", `/${next}/${encodeURIComponent(recordId)}`);
+    if (recordId && (next === "quotations" || next === "enquiries" || isRecordWorkspace(next))) {
+      const target = `/${next}/${encodeURIComponent(recordId)}`;
+      if (target === pathname) return;
+      window.history.pushState(null, "", target);
       window.scrollTo(0, 0);
       return;
     }
-    if (next === view && ((next === "staff" && activityMemberId) || (next === "enquiries" && enquiryId) || (next === "quotations" && quoteId))) {
+    if (next === view && ((next === "staff" && activityMemberId) || (next === "enquiries" && enquiryId) || (next === "quotations" && quoteId) || (isRecordWorkspace(next) && pathRecordId))) {
       if (next === "quotations") setLoading(true);
       window.history.pushState(null, "", `/${next}`);
       return;
@@ -338,6 +353,23 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
       setView(next);
     }
   };
+  const openAlert = async (id: string, alertRecordId: string, read = false) => {
+    if (openingAlert.current) return;
+    openingAlert.current = true;
+    try {
+      if (!read) await api("read", {}, { id });
+      const [destination, target] = alertDestination(role, id, alertRecordId);
+      if (destination === view && !target) await load();
+      else openView(destination, target);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not open alert.");
+    } finally {
+      openingAlert.current = false;
+    }
+  };
+  const focusedLoading = isRecordWorkspace(view) && (snap.scope !== scope || (snap.recordId || "") !== recordId);
+  const recordMissing = Boolean(recordId && (view === "tasks" ? !snap.tasks.length : !snap.bookings.length));
+  const searchable = view !== "dashboard" && !recordId && !activeCustomerId && !quoteId && view !== "package-templates";
   const signOut = async () => {
     await authClient.signOut();
     location.reload();
@@ -413,7 +445,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
             <h1>{view === "staff" && activityMemberId ? "Team activity" : nav.find((x) => x[0] === view)?.[1]}</h1>
           </div>
           <div className="top-actions">
-            {!activeCustomerId && !quoteId && view !== "package-templates" && <label className="search">
+            {searchable && <label className="search">
               <Search />
               <input
                 value={search}
@@ -421,7 +453,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
                 placeholder="Search this page"
               />
             </label>}
-            {!quoteId && view !== "package-templates" && <button
+            {searchable && <button
               className="icon-button mobile-search-trigger"
               aria-label="Search this screen"
               aria-expanded={mobileSearch}
@@ -439,7 +471,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
             </button>
           </div>
         </header>
-        {mobileSearch && !quoteId && view !== "package-templates" && (
+        {mobileSearch && searchable && (
           <div className="mobile-search-panel">
             <Search />
             <input
@@ -460,12 +492,12 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
             </button>
           </div>
         )}
-        <section className={`content${loading ? " content-loading" : ""}`} aria-busy={loading}>
-          {loading ? (
+        <section className={`content${loading || focusedLoading ? " content-loading" : ""}`} aria-busy={loading || focusedLoading}>
+          {loading || focusedLoading ? (
             <RouteLoading />
           ) : (
             <>
-          {isPagedView(view) && !activeCustomerId && !enquiryId && !quoteId && (
+          {isPagedView(view) && !recordId && !activeCustomerId && !enquiryId && !quoteId && (
             <ListFiltersBar
               view={view}
               role={role}
@@ -483,34 +515,34 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
               and filters to narrow the list.
             </div>
           )}
-          {view === "dashboard" && <Dashboard s={snap} go={openView} />}{" "}
+          {recordId && <button type="button" className="button secondary workspace-record-back" onClick={() => openView(view)}><ChevronLeft /> Back to {view === "operations" && role === "operations" ? "my trips" : view}</button>}
+          {recordMissing && <section className="panel workspace-record-empty">
+            <h2>{view === "tasks" ? "Task" : view === "operations" ? "Trip" : "Booking"} unavailable</h2>
+            <p>This record may have moved, been removed, or been reassigned.</p>
+          </section>}
+          {view === "dashboard" && snap.overview && <Dashboard overview={snap.overview} actor={snap.actor} staff={snap.staff} go={openView} openAlert={openAlert} />}
           {view === "enquiries" && (
             <Enquiries key={enquiryId || "enquiry-list"} detailId={enquiryId} s={snap} q={search} reload={load} fail={setError} />
           )}{" "}
-          {view === "customers" && activeCustomerId && <CustomerDetailPage id={activeCustomerId} embedded back={() => { window.history.pushState(null, "", "/customers"); setActiveCustomerId(""); setLoading(true); }} />}
+          {view === "customers" && activeCustomerId && <CustomerDetailPage key={activeCustomerId} id={activeCustomerId} embedded openBooking={id => openView("bookings", id)} back={() => { window.history.pushState(null, "", "/customers"); setActiveCustomerId(""); setLoading(true); }} />}
           {view === "customers" && !activeCustomerId && (
             <Customers s={snap} q={search} reload={load} fail={setError} openDetail={(id) => { window.history.pushState(null, "", `/customers/${encodeURIComponent(id)}`); setActiveCustomerId(id); setLoading(true); }} />
           )}{" "}
           {view === "quotations" && (quoteId
             ? <LinkedQuote key={quoteId} quoteId={quoteId} actor={snap.actor} />
             : snap.scope === "quotations" && <Quotations s={snap} q={search} reload={load} fail={setError} />)}{" "}
-          {view === "bookings" && (
-            <Bookings s={snap} q={search} reload={load} fail={setError} />
+          {view === "bookings" && !recordMissing && (
+            <Bookings key={recordId || "bookings-list"} recordId={recordId} back={() => openView("bookings")} s={snap} q={recordId ? "" : search} reload={load} fail={setError} />
           )}{" "}
-          {view === "operations" && (
-            <Operations s={snap} q={search} reload={load} fail={setError} />
+          {view === "operations" && !recordMissing && (
+            <Operations key={recordId || "operations-list"} recordId={recordId} back={() => openView("operations")} s={snap} q={recordId ? "" : search} reload={load} fail={setError} />
           )}{" "}
           {view === "settlements" && <Settlements s={snap} q={search} reload={load} fail={setError} />}
-          {view === "tasks" && (
-            <Tasks s={snap} q={search} reload={load} fail={setError} />
+          {view === "tasks" && !recordMissing && (
+            <Tasks key={recordId || "tasks-list"} focused={Boolean(recordId)} s={snap} q={recordId ? "" : search} reload={load} fail={setError} />
           )}{" "}
           {view === "notifications" && (
-            <Notifications
-              s={snap}
-              reload={load}
-              go={openView}
-              fail={setError}
-            />
+            <Notifications s={snap} openAlert={openAlert} />
           )}{" "}
           {view === "reports" && <Reports s={snap} fail={setError} />}{" "}
           {view === "attendance" && <Attendance role={role} fail={setError} />}{" "}
@@ -528,7 +560,7 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
               window.history.pushState(null, "", `/staff/activity/${encodeURIComponent(id)}`);
               window.scrollTo(0, 0);
             }} />)}
-          {isPagedView(view) && !activeCustomerId && !enquiryId && !quoteId && snap.pagination && (
+          {isPagedView(view) && !recordId && !activeCustomerId && !enquiryId && !quoteId && snap.pagination && (
             <PaginationBar
               value={snap.pagination}
               change={(page) => {
@@ -598,161 +630,6 @@ export function CrmApp({ initialView = "dashboard", customerId = "" }: { initial
   );
 }
 
-function Dashboard({ s, go }: { s: Snap; go: (v: View) => void }) {
-  const today = indiaInput(new Date().toISOString()).slice(0, 10),
-    open = s.tasks.filter((t) => !["Done", "Cancelled"].includes(t.status)),
-    due = open.filter((t) => t.dueAt && indiaInput(t.dueAt).slice(0, 10) <= today)
-      .sort((a, b) => String(a.dueAt).localeCompare(String(b.dueAt))),
-    newLeads = s.enquiries.filter((e) => e.stage === "New"),
-    unread = s.notifications.filter((n) => !n.read);
-  return (
-    <>
-      <div className="welcome">
-        <div>
-          <p className="eyebrow">
-            Good to see you, {s.actor.name.split(" ")[0]}
-          </p>
-          <h2>
-            {due.length
-              ? `${due.length} action${due.length === 1 ? "" : "s"} need attention today.`
-              : "You are clear for today."}
-          </h2>
-          <p>
-            Keep each customer moving with one visible owner and one clear next
-            action.
-          </p>
-        </div>
-        <button
-          className="button light"
-          onClick={() =>
-            go(s.actor.role === "operations" ? "tasks" : "enquiries")
-          }
-        >
-          Open work queue <ArrowRight />
-        </button>
-      </div>
-      <div className="metrics">
-        {s.actor.role !== "operations" && <Metric
-          icon={Inbox}
-          label="Open enquiries"
-          value={s.enquiries.filter((x) => x.stage !== "Lost").length}
-          note={`${newLeads.length} new`}
-        />}
-        <Metric
-          icon={Clock3}
-          label="Due or overdue"
-          value={due.length}
-          note="Needs action"
-          tone="coral"
-        />
-        <Metric
-          icon={CheckSquare}
-          label="Open tasks"
-          value={open.length}
-          note={`${open.filter((x) => x.status === "Waiting").length} waiting`}
-        />
-        <Metric
-          icon={Bell}
-          label="Unread updates"
-          value={unread.length}
-          note="In-app notices"
-        />
-      </div>
-      <div className="dashboard-grid">
-        <section className="panel">
-          <PanelHead
-            title="Due today or overdue"
-            sub="Open tasks, earliest due first"
-            action={
-              <button className="text-button" onClick={() => go("tasks")}>
-                View all <ArrowRight />
-              </button>
-            }
-          />
-          <div className="timeline">
-            {due.slice(0, 6).map((t, i) => (
-              <div className="timeline-row" key={t._id}>
-                <span
-                  className={
-                    String(t.dueAt) < new Date().toISOString()
-                      ? "dot overdue"
-                      : "dot"
-                  }
-                >
-                  {i + 1}
-                </span>
-                <div>
-                  <b>{t.title}</b>
-                  <small>
-                    {moneyDate(t.dueAt)} · {t.status}
-                  </small>
-                </div>
-              </div>
-            ))}
-            {!due.length && (
-              <Empty
-                icon={Check}
-                title="Nothing due today"
-                text="Open Tasks to see upcoming work."
-              />
-            )}
-          </div>
-        </section>
-        {s.actor.role === "operations" ? <section className="panel">
-          <PanelHead title="My trips" sub="Open your assigned trips, pickup details and trip updates." />
-          <button className="button secondary" onClick={() => go("operations")}>View my trips <ArrowRight /></button>
-        </section> : <section className="panel">
-          <PanelHead
-            title="Enquiry pulse"
-            sub="Where active conversations stand"
-          />
-          <div className="stage-bars">
-            {["New", "Contacting", "Gathering details", "On hold"].map(
-              (stage, i) => {
-                const n = s.enquiries.filter((e) => e.stage === stage).length,
-                  max = Math.max(1, s.enquiries.length);
-                return (
-                  <div key={stage}>
-                    <span>
-                      {stage}
-                      <b>{n}</b>
-                    </span>
-                    <i>
-                      <em
-                        style={{ width: `${(n / max) * 100}%` }}
-                        className={`bar-${i}`}
-                      />
-                    </i>
-                  </div>
-                );
-              },
-            )}
-          </div>
-          <button
-            className="button secondary wide"
-            onClick={() =>
-              go(s.actor.role === "operations" ? "tasks" : "enquiries")
-            }
-          >
-            Review workspace
-          </button>
-        </section>}
-      </div>
-    </>
-  );
-}
-function Metric({ icon: Icon, label, value, note, tone = "blue" }: any) {
-  return (
-    <article className={`metric ${tone}`}>
-      <span className="metric-icon">
-        <Icon />
-      </span>
-      <small>{label}</small>
-      <strong>{value}</strong>
-      <p>{note}</p>
-    </article>
-  );
-}
 function PanelHead({
   title,
   sub,
@@ -905,10 +782,20 @@ function Customers({
       .toLowerCase()
       .includes(q.toLowerCase()),
   );
-  function start(r?: Row) {
-    setEdit(r || null);
-    setData(r ? { ...emptyCustomer, ...r } : emptyCustomer);
-    setOpen(true);
+  async function start(r?: Row) {
+    if (!r) { setEdit(null); setData({ ...emptyCustomer }); setOpen(true); return; }
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/crm?resource=customer-edit&id=${encodeURIComponent(r._id)}`, { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not open the customer for editing.");
+      const { version, ...fields } = body;
+      setEdit({ ...r, version });
+      setData({ ...emptyCustomer, ...fields });
+      setOpen(true);
+    } catch (error) {
+      fail((error as Error).message);
+    } finally { setBusy(false); }
   }
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -929,7 +816,7 @@ function Customers({
         <p>
           {rows.length} customer{rows.length === 1 ? "" : "s"} visible
         </p>
-        <button className="button primary" onClick={() => start()}>
+        <button className="button primary" disabled={busy} onClick={() => void start()}>
           <Plus /> New customer
         </button>
       </div>
@@ -946,7 +833,7 @@ function Customers({
                 <Badge value={r.reviewNeeded ? "Needs review" : "Customer"} />
                 <ArrowRight />
               </button>
-              <button className="customer-edit-button" onClick={() => start(r)}>Edit</button>
+              <button className="customer-edit-button" disabled={busy} onClick={() => void start(r)}>Edit</button>
             </div>
           ))}
           {!rows.length && (
@@ -987,6 +874,8 @@ function Customers({
               value={data.language}
               set={(v: any) => setData({ ...data, language: v })}
             />
+            <Field label="PAN (optional)" value={data.pan} set={(pan: string) => setData({ ...data, pan })} autoComplete="off" maxLength={10} />
+            <Field label="Passport number (optional)" value={data.passportNumber} set={(passportNumber: string) => setData({ ...data, passportNumber })} autoComplete="off" maxLength={24} />
             <Field
               label="Address"
               value={data.address}
@@ -1073,7 +962,7 @@ function Enquiries({
   const [savingCustomer, setSavingCustomer] = useState(false);
   const customerWrite = useRef(false);
   const [section, setSection] = useState<"start" | "trip" | "activity" | "quote">("start");
-  const [activity, setActivity] = useState<{ events: Row[]; followUp?: Row; quotes?: Row[]; booking?: Row; quoteGaps?: string[] } | null>(null);
+  const [activity, setActivity] = useState<{ events: Row[]; followUp?: Row; quotes?: Row[]; booking?: Row; bookingNextAction?: string; quoteGaps?: string[] } | null>(null);
   const [activityError, setActivityError] = useState("");
   const [teamChoice, setTeamChoice] = useState("");
   const [checkedAt, setCheckedAt] = useState(0);
@@ -1580,6 +1469,7 @@ function Enquiries({
               set={(v: any) => setData({ ...data, childrenAges: v })}
               placeholder="2 children: 5, 9"
             />
+            <Field label="Infants" type="number" value={data.infants ?? ""} set={(v: string) => setData({ ...data, infants: v })} />
             <Field
               label="Budget"
               value={data.budget}
@@ -1598,6 +1488,8 @@ function Enquiries({
               placeholder="Hotel, car, train help…"
               span
             />
+            <Field label="Who arranges the services?" value={data.serviceResponsibility}
+              set={(v: string) => setData({ ...data, serviceResponsibility: v })} placeholder="Customer has train tickets; agency arranges hotel" span />
             <Field
               label="Hotel preference"
               value={data.hotelPreference}
@@ -1611,13 +1503,15 @@ function Enquiries({
             <Field label="Drop-off / departure" value={data.dropoff} set={(v: string) => setData({ ...data, dropoff: v })} />
             <Field label="Rooms needed" value={data.rooms} set={(v: string) => setData({ ...data, rooms: v })} />
             <Field label="Special requirements" value={data.specialRequirements} set={(v: string) => setData({ ...data, specialRequirements: v })} area span />
+            {data.customerId ? <CustomerDocumentNumbers key={data.customerId} customerId={data.customerId} />
+              : <p className="form-guidance span">Select a customer in Start to add their PAN or passport number here.</p>}
             </>}
             {section === "activity" && <>
             <Field
               label="Next action"
               value={data.nextAction}
               set={(v: any) => setData({ ...data, nextAction: v })}
-              placeholder="Call to confirm hotel category"
+              placeholder={activity?.bookingNextAction || "Call to confirm hotel category"}
               required={Boolean(data.nextFollowUp)}
             />
             <Field
@@ -1672,11 +1566,13 @@ function Tasks({
   q,
   reload,
   fail,
+  focused = false,
 }: {
   s: Snap;
   q: string;
   reload: () => Promise<void>;
   fail: (x: string) => void;
+  focused?: boolean;
 }) {
   const [open, setOpen] = useState(false),
     [edit, setEdit] = useState<Row | null>(null),
@@ -1744,7 +1640,7 @@ function Tasks({
   const days = calendarDays(month);
   return (
     <>
-      <div className="section-actions">
+      {!focused && <div className="section-actions">
         <div className="month-switch">
           <button
             onClick={() =>
@@ -1770,9 +1666,9 @@ function Tasks({
         <button className="button primary" onClick={() => start()}>
           <Plus /> New task
         </button>
-      </div>
-      <div className="task-layout">
-        <section className="panel calendar">
+      </div>}
+      <div className={focused ? "" : "task-layout"}>
+        {!focused && <section className="panel calendar">
           <div className="weekdays">
             {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((x) => (
               <b key={x}>{x}</b>
@@ -1781,12 +1677,12 @@ function Tasks({
           <div className="calendar-grid">
             {days.map((d, i) => {
               const items = rows.filter(
-                (t) => String(t.dueAt).slice(0, 10) === d.iso,
+                (t) => indiaInput(t.dueAt).slice(0, 10) === d.iso,
               );
               return (
                 <div
                   key={i}
-                  className={`${d.other ? "other " : ""}${d.iso === new Date().toISOString().slice(0, 10) ? "today" : ""}`}
+                  className={`${d.other ? "other " : ""}${d.iso === indiaInput(new Date().toISOString()).slice(0, 10) ? "today" : ""}`}
                 >
                   <span>{d.day}</span>
                   {items.slice(0, 3).map((t) => (
@@ -1799,11 +1695,11 @@ function Tasks({
               );
             })}
           </div>
-        </section>
+        </section>}
         <section className="panel task-list">
-          <PanelHead title="Work queue" sub="Due soonest first" />
+          <PanelHead title={focused ? "Task details" : "Work queue"} sub={focused ? "Select the task to update it" : "Due soonest first"} />
           <div>
-            {rows.slice(0, 12).map((t) => (
+            {rows.map((t) => (
               <button className="task-row" key={t._id} onClick={() => start(t)}>
                 <span
                   className={`task-check ${t.status === "Done" ? "done" : ""}`}
@@ -1881,35 +1777,13 @@ function Tasks({
   );
 }
 
-function Notifications({
-  s,
-  reload,
-  go,
-  fail,
-}: {
-  s: Snap;
-  reload: () => Promise<void>;
-  go: (v: View, recordId?: string) => void;
-  fail: (x: string) => void;
-}) {
+function Notifications({ s, openAlert }: { s: Snap; openAlert: (id: string, recordId: string, read?: boolean) => Promise<void> }) {
   const [opening, setOpening] = useState("");
   async function read(n: Row) {
     if (opening) return;
     setOpening(n._id);
     try {
-      if (!n.read) await api("read", {}, { id: n._id });
-      const key = String(n._id || "");
-      if (key.startsWith("attendance-")) go("attendance");
-      else if (/^(trip:|operations-|incident:|collection:|handover:|readiness:)/.test(key)) go("operations");
-      else if (s.actor.role !== "operations" && /^(settlement-|change-|customer-change:)/.test(key)) go("settlements");
-      else if (s.actor.role !== "operations" && /^(booking:|invoice:|payment:|finance-|feedback:)/.test(key)) go("bookings");
-      else if (s.actor.role !== "operations" && /^quote/.test(key)) go("quotations", n.recordId);
-      else if (s.actor.role !== "operations" && /^enquiry-team:/.test(key)) go("enquiries", n.recordId);
-      else if (/^(task:|due:|overdue:|follow:|reassign:)/.test(key)) go("tasks");
-      else go(s.actor.role === "operations" ? "tasks" : "enquiries");
-    } catch (e) {
-      fail((e as Error).message);
-      await reload();
+      await openAlert(n._id, n.recordId, Boolean(n.read));
     } finally {
       setOpening("");
     }

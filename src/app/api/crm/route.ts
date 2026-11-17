@@ -9,6 +9,9 @@ import {
   settings,
   searchCustomers,
   customerDetail,
+  customerEdit,
+  customerNumbers,
+  saveCustomerNumbers,
 } from "@/server/crm";
 import type { WorkspaceScope } from "@/server/crm";
 import { enquiryActivity } from "@/server/crm";
@@ -32,6 +35,7 @@ import {
 } from "@/server/quotes";
 import {
   amendAdvance,
+  bookingPrivateNumbers,
   convertAcceptedQuote,
   decidePayment,
   issueInvoice,
@@ -61,7 +65,7 @@ import {
   updateReadiness,
   updateTripProgress,
 } from "@/server/operations";
-import { createInvoicePrintCopies, saveInvoiceDraft, saveInvoiceTemplate } from "@/server/invoices";
+import { createInvoicePrintCopies, renderInvoiceTemplatePreview, saveInvoiceDraft, saveInvoiceTemplate } from "@/server/invoices";
 import { publicErrorMessage } from "@/lib/public-error";
 import { canOpenWorkspace, type View } from "@/lib/workspace-access";
 export const runtime = "nodejs";
@@ -127,6 +131,15 @@ export async function GET(req: Request) {
         headers: { "Cache-Control": "private, no-store" },
       });
     }
+    const privateResource = url.searchParams.get("resource");
+    if (privateResource === "customer-edit" || privateResource === "customer-numbers" || privateResource === "booking-private-numbers") {
+      const id = (url.searchParams.get("id") || "").trim();
+      if (!id || id.length > 160) throw new Error("404: Record not found.");
+      const result = privateResource === "customer-edit" ? await customerEdit(a, id)
+        : privateResource === "customer-numbers" ? await customerNumbers(a, id)
+        : await bookingPrivateNumbers(a, id);
+      return Response.json(result, { headers: { "Cache-Control": "private, no-store" } });
+    }
     const requestedScope = url.searchParams.get("scope") || "dashboard";
     const scopes = new Set<WorkspaceScope>([
       "all", "shell", "dashboard", "enquiries", "customers", "quotations", "bookings",
@@ -139,6 +152,7 @@ export async function GET(req: Request) {
       : requestedScope === "shell" || canOpenWorkspace(a.role, requestedScope as View);
     if (!permitted) throw new Error("403: This workspace page is not available for your role.");
     const listQuery: WorkspaceListQuery = {
+      recordId: url.searchParams.get("recordId") || "",
       page: Number(url.searchParams.get("page") || 1),
       pageSize: Number(url.searchParams.get("pageSize") || 20),
       query: url.searchParams.get("q") || "",
@@ -193,6 +207,9 @@ export async function POST(req: Request) {
       case "settlement-close": result = await closeSettlement(a, body.data); break;
       case "customer":
         result = await saveCustomer(a, body.data, body.id, body.version);
+        break;
+      case "customer-numbers":
+        result = await saveCustomerNumbers(a, body.data);
         break;
       case "enquiry":
         result = await saveEnquiry(a, body.data, body.id, body.version, body.logContact === true);
@@ -268,6 +285,10 @@ export async function POST(req: Request) {
       case "invoice-template-save":
         result = await saveInvoiceTemplate(a, body.data);
         break;
+      case "invoice-template-preview":
+        return new Response(Buffer.from(await renderInvoiceTemplatePreview(a, body.data)), { headers: {
+          "Content-Type": "application/pdf", "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+        } });
       case "invoice-print-copies":
         result = await createInvoicePrintCopies(a, body.data);
         break;

@@ -4,7 +4,9 @@ Updated: 4 November 2026
 
 ## Current state
 
-Reports opens the Customer & trip register for Owner and Sales, with India-time creation-date filters and filtered or all-authorized CSV/XLSX export. Operations keeps its existing summary reports. The dashboard is named Overview and keeps due and overdue work visible.
+Customer form, customer detail and the enquiry Trip tab support the same customer PAN and passport numbers. Booking People separately holds payer PAN and each traveller’s passport number. The customer detail page shows saved trip requirements, follow-up and linked enquiries/quotations with role-scoped history. The list and report show the current booking action instead of a stale Create booking prompt. Invoice settings renders a sample PDF with the issued-invoice renderer and supports previewing unsaved settings.
+
+Reports opens the Customer & trip register for Owner and Sales, with India-time creation-date filters and filtered or all-authorized CSV/XLSX export. Operations keeps its existing summary reports. Overview shows server-counted due and upcoming tasks, active enquiries and quotations, active bookings or assigned trips, and unread alerts. The dashboard and customer record open the exact role-scoped booking. Direct task and trip links do not depend on list pagination. Cloudinary and expanded historical imports are deferred.
 
 The browser package preview and customer quotation/package downloads omit prices. Issued invoices retain billing lines and use the supplied Early Bird Vacations logo as the default. Quotation and invoice PDFs use the measured Letter grid from the agency reference. Sent quotes expose a separate Customer asked for changes action. Issued invoice downloads are available from Bookings, Customer details, and the linked accepted quotation.
 
