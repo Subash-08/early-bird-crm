@@ -35,7 +35,7 @@ Enquiry and task usability fixes now keep the selected customer name visible, pr
 
 The complete local workflow covers enquiry, quotation, booking, verified advance, supplier/vehicle coordination, driver assignments, My trips, readiness/private documents, operational PDFs, incidents, collection/custody, gated trip completion, settlement, Owner-managed role transitions, filtered reports and CSV/XLSX exports. The responsive shell now includes fixed independently scrolling navigation and a privacy-safe installable PWA/offline fallback.
 
-The visual system uses deep navy, sea blue, warm sand and coral with Plus Jakarta Sans and Lucide icons. It intentionally differs from the old green demo while keeping the clean, friendly density the user preferred.
+The visual system uses deep navy, sea blue, warm sand and coral with DM Sans and Lucide icons throughout the web application. It intentionally differs from the old green demo while keeping the clean, friendly density the user preferred.
 
 The invoice workflow now includes an Owner-only versioned template, booking-specific billing/service addresses, HSN charge and note rows, CGST/SGST/IGST/TCS calculation, financial-year numbering, verified-payment summary, reference-style Letter PDF, optional travel summary, customer invoice history and audited renamed print copies that keep the original invoice number and data. See `docs/invoice-template-and-billing-plan.md` and `docs/invoice-template-manual-test.md`.
 
